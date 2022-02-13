@@ -1,4 +1,3 @@
-import gc
 import hashlib
 import os
 import psutil
@@ -17,8 +16,8 @@ from hydrus.core import HydrusController
 from hydrus.core import HydrusData
 from hydrus.core import HydrusExceptions
 from hydrus.core import HydrusGlobals as HG
-from hydrus.core import HydrusPaths
 from hydrus.core import HydrusSerialisable
+from hydrus.core import HydrusTemp
 from hydrus.core import HydrusThreading
 from hydrus.core import HydrusVideoHandling
 from hydrus.core.networking import HydrusNetwork
@@ -46,7 +45,6 @@ from hydrus.client.gui import ClientGUITopLevelWindowsPanels
 from hydrus.client.gui import QtPorting as QP
 from hydrus.client.gui.lists import ClientGUIListManager
 from hydrus.client.importing import ClientImportSubscriptions
-from hydrus.client.metadata import ClientTags
 from hydrus.client.metadata import ClientTagsHandling
 from hydrus.client.networking import ClientNetworking
 from hydrus.client.networking import ClientNetworkingBandwidth
@@ -112,6 +110,7 @@ class App( QW.QApplication ):
         self._pubsub = pubsub
         
         self.setApplicationName( 'Hydrus Client' )
+        
         self.setApplicationVersion( str( HC.SOFTWARE_VERSION ) )
         
         QC.qInstallMessageHandler( MessageHandler )
@@ -217,7 +216,7 @@ class Controller( HydrusController.HydrusController ):
     
     def _InitTempDir( self ):
         
-        self.temp_dir = HydrusPaths.GetTempDir()
+        self.temp_dir = HydrusTemp.GetTempDir()
         
     
     def _DestroySplash( self ):
@@ -266,7 +265,7 @@ class Controller( HydrusController.HydrusController ):
     
     def _ReportShutdownDaemonsStatus( self ):
         
-        names = sorted( { daemon.name for daemon in self._daemons if daemon.is_alive() } )
+        names = sorted( ( name for ( name, job ) in self._daemon_jobs.items() if job.CurrentlyWorking() ) )
         
         self.frame_splash_status.SetSubtext( ', '.join( names ) )
         
@@ -292,7 +291,7 @@ class Controller( HydrusController.HydrusController ):
         
         def do_it( job_key: ClientThreading.JobKey ):
             
-            while not HG.view_shutdown:
+            while not HG.started_shutdown:
                 
                 with self._sleep_lock:
                     
@@ -334,8 +333,11 @@ class Controller( HydrusController.HydrusController ):
         self.CallToThread( do_it, job_key )
         
     
-    
     def _ShutdownManagers( self ):
+        
+        self.files_maintenance_manager.Shutdown()
+        
+        self.quick_download_manager.Shutdown()
         
         managers = [ self.subscriptions_manager, self.tag_display_maintenance_manager ]
         
@@ -396,7 +398,7 @@ class Controller( HydrusController.HydrusController ):
                         
                     else:
                         
-                        raise HydrusExceptions.QtDeadWindowException('Parent Window was destroyed before Qt command was called!')
+                        raise HydrusExceptions.QtDeadWindowException( 'Parent Window was destroyed before Qt command was called!' )
                         
                     
                 
@@ -425,9 +427,22 @@ class Controller( HydrusController.HydrusController ):
         
         QP.CallAfter( qt_code, win, job_key )
         
+        i = 0
+        
+        while not job_key.IsDone() and i < 8:
+            
+            time.sleep( 0.02 )
+            
+            i += 1
+            
+        
+        # I think in some cases with the splash screen we may actually be pushing stuff here after model shutdown
+        # but I also don't want a hang, as we have seen with some GUI async job that got fired on shutdown and it seems some event queue was halted or deadlocked
+        # so, we'll give it 16ms to work, then we'll start testing for shutdown hang
+        
         while not job_key.IsDone():
             
-            if not self._qt_app_running:
+            if HG.model_shutdown or not self._qt_app_running:
                 
                 raise HydrusExceptions.ShutdownException( 'Application is shutting down!' )
                 
@@ -454,16 +469,20 @@ class Controller( HydrusController.HydrusController ):
         raise HydrusExceptions.ShutdownException()
         
     
-    def CallAfterQtSafe( self, window, func, *args, **kwargs ) -> ClientThreading.QtAwareJob:
+    def CallAfterQtSafe( self, window, label, func, *args, **kwargs ) -> ClientThreading.QtAwareJob:
         
-        return self.CallLaterQtSafe( window, 0, func, *args, **kwargs )
+        return self.CallLaterQtSafe( window, 0, label, func, *args, **kwargs )
         
     
-    def CallLaterQtSafe( self, window, initial_delay, func, *args, **kwargs ) -> ClientThreading.QtAwareJob:
+    def CallLaterQtSafe( self, window, initial_delay, label, func, *args, **kwargs ) -> ClientThreading.QtAwareJob:
         
         job_scheduler = self._GetAppropriateJobScheduler( initial_delay )
         
+        # we set a label so the call won't have to look at Qt objects for a label in the wrong place
+        
         call = HydrusData.Call( func, *args, **kwargs )
+        
+        call.SetLabel( label )
         
         job = ClientThreading.QtAwareJob( self, job_scheduler, window, initial_delay, call )
         
@@ -475,13 +494,17 @@ class Controller( HydrusController.HydrusController ):
         return job
         
     
-    def CallRepeatingQtSafe(self, window, initial_delay, period, func, *args, **kwargs):
+    def CallRepeatingQtSafe( self, window, initial_delay, period, label, func, *args, **kwargs ) -> ClientThreading.QtAwareRepeatingJob:
         
         job_scheduler = self._GetAppropriateJobScheduler( period )
         
+        # we set a label so the call won't have to look at Qt objects for a label in the wrong place
+        
         call = HydrusData.Call( func, *args, **kwargs )
         
-        job = ClientThreading.QtAwareRepeatingJob(self, job_scheduler, window, initial_delay, period, call)
+        call.SetLabel( label )
+        
+        job = ClientThreading.QtAwareRepeatingJob( self, job_scheduler, window, initial_delay, period, call )
         
         if job_scheduler is not None:
             
@@ -539,7 +562,7 @@ class Controller( HydrusController.HydrusController ):
                     
                 
             
-            self.CallBlockingToQt(self._splash, qt_code)
+            self.CallBlockingToQt( self._splash, qt_code )
             
             for i in range( 10, 0, -1 ):
                 
@@ -579,6 +602,20 @@ class Controller( HydrusController.HydrusController ):
                 
                 self.pub( 'set_status_bar_dirty' )
                 
+            
+        
+    
+    def ClipboardHasImage( self ):
+        
+        try:
+            
+            self.GetClipboardImage()
+            
+            return True
+            
+        except HydrusExceptions.DataMissing:
+            
+            return False
             
         
     
@@ -732,7 +769,7 @@ class Controller( HydrusController.HydrusController ):
                 
             
         
-        self.Write( 'last_shutdown_work_time', HydrusData.GetNow() )
+        self.Write( 'register_shutdown_work' )
         
     
     def Exit( self ):
@@ -785,11 +822,77 @@ class Controller( HydrusController.HydrusController ):
             
         
     
+    def FlipQueryPlannerMode( self ):
+        
+        if not HG.query_planner_mode:
+            
+            now = HydrusData.GetNow()
+            
+            HG.query_planner_start_time = now
+            HG.query_planner_query_count = 0
+            
+            HG.query_planner_mode = True
+            
+            HydrusData.ShowText( 'Query Planner mode on!' )
+            
+        else:
+            
+            HG.query_planner_mode = False
+            
+            HG.queries_planned = set()
+            
+            HydrusData.ShowText( 'Query Planning done: {} queries analyzed'.format( HydrusData.ToHumanInt( HG.query_planner_query_count ) ) )
+            
+        
+    
+    def FlipProfileMode( self ):
+        
+        if not HG.profile_mode:
+            
+            now = HydrusData.GetNow()
+            
+            with HG.profile_counter_lock:
+                
+                HG.profile_start_time = now
+                HG.profile_slow_count = 0
+                HG.profile_fast_count = 0
+                
+            
+            
+            HG.profile_mode = True
+            
+            HydrusData.ShowText( 'Profile mode on!' )
+            
+        else:
+            
+            HG.profile_mode = False
+            
+            with HG.profile_counter_lock:
+                
+                ( slow, fast ) = ( HG.profile_slow_count, HG.profile_fast_count )
+                
+            
+            HydrusData.ShowText( 'Profiling done: {} slow jobs, {} fast jobs'.format( HydrusData.ToHumanInt( slow ), HydrusData.ToHumanInt( fast ) ) )
+            
+        
+    
+    def GetClipboardImage( self ):
+        
+        clipboard_image = QW.QApplication.clipboard().image()
+        
+        if clipboard_image is None or clipboard_image.isNull():
+            
+            raise HydrusExceptions.DataMissing( 'No bitmap on the clipboard!' )
+            
+        
+        return clipboard_image
+        
+    
     def GetClipboardText( self ):
         
         clipboard_text = QW.QApplication.clipboard().text()
         
-        if not clipboard_text:
+        if clipboard_text is None:
             
             raise HydrusExceptions.DataMissing( 'No text on the clipboard!' )
             
@@ -933,6 +1036,11 @@ class Controller( HydrusController.HydrusController ):
         #
         
         self.frame_splash_status.SetSubtext( 'network' )
+        
+        if self.new_options.GetBoolean( 'boot_with_network_traffic_paused' ):
+            
+            HG.client_controller.new_options.SetBoolean( 'pause_all_new_network_traffic', True )
+            
         
         self.parsing_cache = ClientCaches.ParsingCache()
         
@@ -1179,40 +1287,16 @@ class Controller( HydrusController.HydrusController ):
         
         self.RestartClientServerServices()
         
-        if not HG.no_daemons:
-            
-            self._daemons.append( HydrusThreading.DAEMONForegroundWorker( self, 'MaintainTrash', ClientDaemons.DAEMONMaintainTrash, init_wait = 120 ) )
-            
-        
         self.files_maintenance_manager.Start()
         
-        job = self.CallRepeating( 0.0, 30.0, self.SaveDirtyObjectsImportant )
-        job.WakeOnPubSub( 'important_dirt_to_clean' )
-        self._daemon_jobs[ 'save_dirty_objects_important' ] = job
-        
-        job = self.CallRepeating( 0.0, 300.0, self.SaveDirtyObjectsInfrequent )
-        self._daemon_jobs[ 'save_dirty_objects_infrequent' ] = job
-        
-        job = self.CallRepeating( 5.0, 3600.0, self.SynchroniseAccounts )
-        job.ShouldDelayOnWakeup( True )
-        job.WakeOnPubSub( 'notify_unknown_accounts' )
-        self._daemon_jobs[ 'synchronise_accounts' ] = job
-        
-        job = self.CallRepeating( 5.0, HydrusNetwork.UPDATE_CHECKING_PERIOD, self.SynchroniseRepositories )
-        job.ShouldDelayOnWakeup( True )
-        job.WakeOnPubSub( 'notify_restart_repo_sync' )
-        job.WakeOnPubSub( 'notify_new_permissions' )
-        job.WakeOnPubSub( 'wake_idle_workers' )
-        self._daemon_jobs[ 'synchronise_repositories' ] = job
-        
-        job = self.CallRepeatingQtSafe( self, 10.0, 10.0, self.CheckMouseIdle )
+        job = self.CallRepeatingQtSafe( self, 10.0, 10.0, 'repeating mouse idle check', self.CheckMouseIdle )
         self._daemon_jobs[ 'check_mouse_idle' ] = job
         
         if self.db.IsFirstStart():
             
             message = 'Hi, this looks like the first time you have started the hydrus client.'
             message += os.linesep * 2
-            message += 'Don\'t forget to check out the help if you haven\'t already--it has an extensive \'getting started\' section, including how to update and the importance of backing up your database.'
+            message += 'Don\'t forget to check out the help if you haven\'t already, by clicking help->help--it has an extensive \'getting started\' section, including how to update and the importance of backing up your database.'
             message += os.linesep * 2
             message += 'To dismiss popup messages like this, right-click them.'
             
@@ -1378,7 +1462,29 @@ class Controller( HydrusController.HydrusController ):
             
         
     
+    def ReportLastSessionLoaded( self, gui_session ):
+        
+        if self._last_last_session_hash is None:
+            
+            self._last_last_session_hash = gui_session.GetSerialisedHash()
+            
+        
+    
     def ReportFirstSessionLoaded( self ):
+        
+        job = self.CallRepeating( 5.0, 3600.0, self.SynchroniseAccounts )
+        job.ShouldDelayOnWakeup( True )
+        job.WakeOnPubSub( 'notify_account_sync_due' )
+        job.WakeOnPubSub( 'notify_network_traffic_unpaused' )
+        self._daemon_jobs[ 'synchronise_accounts' ] = job
+        
+        job = self.CallRepeating( 5.0, HydrusNetwork.UPDATE_CHECKING_PERIOD, self.SynchroniseRepositories )
+        job.ShouldDelayOnWakeup( True )
+        job.WakeOnPubSub( 'notify_restart_repo_sync' )
+        job.WakeOnPubSub( 'notify_new_permissions' )
+        job.WakeOnPubSub( 'wake_idle_workers' )
+        job.WakeOnPubSub( 'notify_network_traffic_unpaused' )
+        self._daemon_jobs[ 'synchronise_repositories' ] = job
         
         job = self.CallRepeating( 5.0, 180.0, ClientDaemons.DAEMONCheckImportFolders )
         job.WakeOnPubSub( 'notify_restart_import_folders_daemon' )
@@ -1391,6 +1497,21 @@ class Controller( HydrusController.HydrusController ):
         job.WakeOnPubSub( 'notify_new_export_folders' )
         job.ShouldDelayOnWakeup( True )
         self._daemon_jobs[ 'export_folders' ] = job
+        
+        job = self.CallRepeating( 30.0, 3600.0, ClientDaemons.DAEMONMaintainTrash )
+        job.ShouldDelayOnWakeup( True )
+        self._daemon_jobs[ 'maintain_trash' ] = job
+        
+        job = self.CallRepeating( 0.0, 30.0, self.SaveDirtyObjectsImportant )
+        job.WakeOnPubSub( 'important_dirt_to_clean' )
+        self._daemon_jobs[ 'save_dirty_objects_important' ] = job
+        
+        job = self.CallRepeating( 0.0, 300.0, self.SaveDirtyObjectsInfrequent )
+        self._daemon_jobs[ 'save_dirty_objects_infrequent' ] = job
+        
+        job = self.CallRepeating( 30.0, 86400.0, self.client_files_manager.DoDeferredPhysicalDeletes )
+        job.WakeOnPubSub( 'notify_new_physical_file_deletes' )
+        self._daemon_jobs[ 'deferred_physical_deletes' ] = job
         
         job = self.CallRepeating( 30.0, 600.0, self.MaintainHashedSerialisables )
         job.WakeOnPubSub( 'maintain_hashed_serialisables' )
@@ -1601,7 +1722,7 @@ class Controller( HydrusController.HydrusController ):
         
         name = session.GetName()
         
-        if name == 'last session':
+        if name == CC.LAST_SESSION_SESSION_NAME:
             
             session_hash = session.GetSerialisedHash()
             
@@ -1848,14 +1969,6 @@ class Controller( HydrusController.HydrusController ):
                     
                 
             
-            self.frame_splash_status.SetSubtext( 'files maintenance manager' )
-            
-            self.files_maintenance_manager.Shutdown()
-            
-            self.frame_splash_status.SetSubtext( 'download manager' )
-            
-            self.quick_download_manager.Shutdown()
-            
             self.frame_splash_status.SetSubtext( '' )
             
             try:
@@ -1875,6 +1988,11 @@ class Controller( HydrusController.HydrusController ):
     
     def SynchroniseAccounts( self ):
         
+        if HG.client_controller.new_options.GetBoolean( 'pause_all_new_network_traffic' ):
+            
+            return
+            
+        
         services = self.services_manager.GetServices( HC.RESTRICTED_SERVICES, randomised = True )
         
         for service in services:
@@ -1889,6 +2007,11 @@ class Controller( HydrusController.HydrusController ):
         
     
     def SynchroniseRepositories( self ):
+        
+        if HG.client_controller.new_options.GetBoolean( 'pause_all_new_network_traffic' ):
+            
+            return
+            
         
         if not self.options[ 'pause_repo_sync' ]:
             
@@ -1927,9 +2050,10 @@ class Controller( HydrusController.HydrusController ):
             return False
             
         
-        max_cpu = self.options[ 'idle_cpu_max' ]
+        system_busy_cpu_percent = self.new_options.GetInteger( 'system_busy_cpu_percent' )
+        system_busy_cpu_count = self.new_options.GetNoneableInteger( 'system_busy_cpu_count' )
         
-        if max_cpu is None:
+        if system_busy_cpu_count is None:
             
             self._system_busy = False
             
@@ -1939,7 +2063,7 @@ class Controller( HydrusController.HydrusController ):
                 
                 cpu_times = psutil.cpu_percent( percpu = True )
                 
-                if True in ( cpu_time > max_cpu for cpu_time in cpu_times ):
+                if len( [ 1 for cpu_time in cpu_times if cpu_time > system_busy_cpu_percent ] ) >= system_busy_cpu_count:
                     
                     self._system_busy = True
                     
@@ -2013,7 +2137,7 @@ class Controller( HydrusController.HydrusController ):
         
         try:
             
-            gc.collect()
+            HG.started_shutdown = True
             
             self.frame_splash_status.SetTitleText( 'shutting down gui\u2026' )
             

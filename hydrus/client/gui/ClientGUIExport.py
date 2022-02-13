@@ -14,8 +14,11 @@ from hydrus.core import HydrusTags
 
 from hydrus.client import ClientConstants as CC
 from hydrus.client import ClientExporting
+from hydrus.client import ClientLocation
 from hydrus.client import ClientSearch
+from hydrus.client import ClientThreading
 from hydrus.client.gui import ClientGUIDialogsQuick
+from hydrus.client.gui import ClientGUIFunctions
 from hydrus.client.gui import ClientGUIScrolledPanels
 from hydrus.client.gui import ClientGUITags
 from hydrus.client.gui import ClientGUITime
@@ -71,10 +74,9 @@ class EditExportFoldersPanel( ClientGUIScrolledPanels.EditPanel ):
         export_type = HC.EXPORT_FOLDER_TYPE_REGULAR
         delete_from_client_after_export = False
         
-        default_local_file_service_key = HG.client_controller.services_manager.GetDefaultLocalFileServiceKey()
-        location_search_context = ClientSearch.LocationSearchContext( current_service_keys = [ default_local_file_service_key ] )
+        default_location_context = HG.client_controller.services_manager.GetDefaultLocationContext()
         
-        file_search_context = ClientSearch.FileSearchContext( location_search_context = location_search_context )
+        file_search_context = ClientSearch.FileSearchContext( location_context = default_location_context )
         
         period = 15 * 60
         
@@ -651,13 +653,13 @@ class ReviewExportFilesPanel( ClientGUIScrolledPanels.ReviewPanel ):
         
         self._UpdateTxtButton()
         
-        HG.client_controller.CallAfterQtSafe( self._export, self._export.setFocus, QC.Qt.OtherFocusReason)
+        ClientGUIFunctions.SetFocusLater( self._export )
         
         self._paths.itemSelectionChanged.connect( self._RefreshTags )
         
         if do_export_and_then_quit:
             
-            QP.CallAfter( self._DoExport, True )
+            HG.client_controller.CallAfterQtSafe( self, 'doing export before dialog quit', self._DoExport, True )
             
         
     
@@ -769,6 +771,8 @@ class ReviewExportFilesPanel( ClientGUIScrolledPanels.ReviewPanel ):
         
         to_do = self._paths.GetData()
         
+        to_do = [ ( ordering_index, media, self._GetPath( media ) ) for ( ordering_index, media ) in to_do ]
+        
         num_to_do = len( to_do )
         
         def qt_update_label( text ):
@@ -798,18 +802,32 @@ class ReviewExportFilesPanel( ClientGUIScrolledPanels.ReviewPanel ):
         
         def do_it( directory, neighbouring_txt_tag_service_keys, delete_afterwards, export_symlinks, quit_afterwards ):
             
+            job_key = ClientThreading.JobKey( cancellable = True )
+            
+            job_key.SetStatusTitle( 'file export' )
+            
+            HG.client_controller.pub( 'message', job_key )
+            
             pauser = HydrusData.BigJobPauser()
             
-            for ( index, ( ordering_index, media ) ) in enumerate( to_do ):
+            for ( index, ( ordering_index, media, path ) ) in enumerate( to_do ):
+                
+                if job_key.IsCancelled():
+                    
+                    break
+                    
                 
                 try:
                     
-                    QP.CallAfter( qt_update_label, HydrusData.ConvertValueRangeToPrettyString(index+1,num_to_do) )
+                    x_of_y = HydrusData.ConvertValueRangeToPrettyString( index + 1, num_to_do )
+                    
+                    job_key.SetVariable( 'popup_text_1', 'Done {}'.format( x_of_y ) )
+                    job_key.SetVariable( 'popup_gauge_1', ( index + 1, num_to_do ) )
+                    
+                    QP.CallAfter( qt_update_label, x_of_y )
                     
                     hash = media.GetHash()
                     mime = media.GetMime()
-                    
-                    path = self._GetPath( media )
                     
                     path = os.path.normpath( path )
                     
@@ -855,7 +873,7 @@ class ReviewExportFilesPanel( ClientGUIScrolledPanels.ReviewPanel ):
                         
                         HydrusPaths.MirrorFile( source_path, path )
                         
-                        HydrusPaths.MakeFileWriteable( path )
+                        HydrusPaths.TryToGiveFileNicePermissionBits( path )
                         
                     
                 except:
@@ -868,7 +886,7 @@ class ReviewExportFilesPanel( ClientGUIScrolledPanels.ReviewPanel ):
                 pauser.Pause()
                 
             
-            if delete_afterwards:
+            if not job_key.IsCancelled() and delete_afterwards:
                 
                 QP.CallAfter( qt_update_label, 'deleting' )
                 
@@ -876,11 +894,11 @@ class ReviewExportFilesPanel( ClientGUIScrolledPanels.ReviewPanel ):
                 
                 if delete_lock_for_archived_files:
                     
-                    deletee_hashes = { media.GetHash() for ( ordering_index, media ) in to_do if not media.HasArchive() }
+                    deletee_hashes = { media.GetHash() for ( ordering_index, media, path ) in to_do if not media.HasArchive() }
                     
                 else:
                     
-                    deletee_hashes = { media.GetHash() for ( ordering_index, media ) in to_do }
+                    deletee_hashes = { media.GetHash() for ( ordering_index, media, path ) in to_do }
                     
                 
                 chunks_of_hashes = HydrusData.SplitListIntoChunks( deletee_hashes, 64 )
@@ -894,6 +912,13 @@ class ReviewExportFilesPanel( ClientGUIScrolledPanels.ReviewPanel ):
                     HG.client_controller.WriteSynchronous( 'content_updates', { CC.LOCAL_FILE_SERVICE_KEY : [ content_update ] } )
                     
                 
+            
+            job_key.DeleteVariable( 'popup_gauge_1' )
+            job_key.SetVariable( 'popup_text_1', 'Done!' )
+            
+            job_key.Finish()
+            
+            job_key.Delete( 5 )
             
             QP.CallAfter( qt_update_label, 'done!' )
             
@@ -920,16 +945,7 @@ class ReviewExportFilesPanel( ClientGUIScrolledPanels.ReviewPanel ):
         
         terms = ClientExporting.ParseExportPhrase( pattern )
         
-        filename = ClientExporting.GenerateExportFilename( directory, media, terms )
-        
-        i = 1
-        
-        while filename in self._existing_filenames:
-            
-            filename = ClientExporting.GenerateExportFilename( directory, media, terms, append_number = i )
-            
-            i += 1
-            
+        filename = ClientExporting.GenerateExportFilename( directory, media, terms, do_not_use_filenames = self._existing_filenames )
         
         path = os.path.join( directory, filename )
         

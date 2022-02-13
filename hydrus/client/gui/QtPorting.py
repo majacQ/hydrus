@@ -5,6 +5,7 @@ import os
 # If not explicitely set, prefer PySide2 instead of the qtpy default which is PyQt5
 # It is important that this runs on startup *before* anything is imported from qtpy.
 # Since test.py, client.py and client.pyw all import this module first before any other Qt related ones, this requirement is satisfied.
+
 if not 'QT_API' in os.environ:
     
     try:
@@ -1246,7 +1247,16 @@ class CallAfterEventCatcher( QC.QObject ):
         
         if event.type() == CallAfterEventType and isinstance( event, CallAfterEvent ):
             
-            event.Execute()
+            if HG.profile_mode:
+                
+                summary = 'Profiling CallAfter Event: {}'.format( event._fn )
+                
+                HydrusData.Profile( summary, 'event.Execute()', globals(), locals(), min_duration_ms = HG.callto_profile_min_job_time_ms )
+                
+            else:
+                
+                event.Execute()
+                
             
             event.accept()
             
@@ -1294,9 +1304,6 @@ def GetClientData( widget, idx ):
         
         return widget.itemData( idx, QC.Qt.UserRole )
     
-    elif isinstance( widget, CheckListBox ):
-        
-        return widget.item( idx ).data( QC.Qt.UserRole )
     
     elif isinstance( widget, QW.QTreeWidget ):
         
@@ -1445,34 +1452,6 @@ def SetBackgroundColour( widget, colour ):
         widget.setStyleSheet( '#{} {{ background-color: {} }}'.format( object_name, QG.QColor( colour ).name() ) )
         
     
-def SetForegroundColour( widget, colour ):
-    
-    widget.setAutoFillBackground( True )
-    
-    object_name = widget.objectName()
-
-    if not object_name:
-        
-        object_name = str( id( widget ) )
-        
-        widget.setObjectName( object_name )
-        
-
-    if isinstance( colour, QG.QColor ):
-
-        widget.setStyleSheet( '#{} {{ color: {} }}'.format( object_name, colour.name()) )
-        
-    elif isinstance( colour, tuple ):
-        
-        colour = QG.QColor( *colour )
-        
-        widget.setStyleSheet( '#{} {{ color: {} }}'.format( object_name, colour.name() ) )
-        
-    else:
-
-        widget.setStyleSheet( '#{} {{ color: {} }}'.format( object_name, QG.QColor( colour ).name() ) )
-        
-
 def SetStringSelection( combobox, string ):
     
     index = combobox.findText( string )
@@ -1681,126 +1660,6 @@ class AboutBox( QW.QDialog ):
         
         self.exec_()
 
-
-class CheckListBox( QW.QListWidget ):
-    
-    checkListBoxChanged = QC.Signal( int )
-    rightClicked = QC.Signal()
-    
-    def __init__( self, parent = None ):
-        
-        QW.QListWidget.__init__( self, parent )
-        
-        self.itemClicked.connect( self._ItemCheckStateChanged )
-        
-        self.setSelectionMode( QW.QAbstractItemView.ExtendedSelection )
-        
-    
-    def Check(self, index, state = True):
-        
-        item = self.item( index )
-        
-        item.setFlags( item.flags() | QC.Qt.ItemIsUserCheckable )
-        
-        if state:
-            
-            item.setCheckState( QC.Qt.Checked )
-            
-        else:
-            
-            item.setCheckState( QC.Qt.Unchecked )
-        
-        
-    def IsChecked(self, index):
-        
-        return self.item( index ).checkState() == QC.Qt.Checked
-    
-    
-    def GetCheckedItems(self):
-        
-        indices = []
-        
-        for i in range( self.count() ):
-            
-            if self.item( i ).checkState() == QC.Qt.Checked: indices.append( i )
-        
-        return indices
-    
-    
-    def GetSelections( self ):
-        
-        indices = []
-
-        for i in range( self.count() ):
-
-            if self.item( i ).isSelected(): indices.append( i )
-
-        return indices
-    
-    def SetCheckedItems( self, items ):
-        
-        for i in range( self.count() ):
-            
-            if i in items:
-                
-                self.item( i ).setCheckState( QC.Qt.Checked )
-            
-            else:
-
-                self.item( i ).setCheckState( QC.Qt.Unchecked )
-                
-    
-    def Append( self, str, client_data ):
-        
-        item = QW.QListWidgetItem()
-
-        item.setFlags( item.flags() | QC.Qt.ItemIsUserCheckable )
-
-        item.setCheckState( QC.Qt.Unchecked )
-        
-        item.setText( str )
-        
-        item.setData( QC.Qt.UserRole, client_data )
-        
-        self.addItem( item )
-        
-        
-    def _ItemCheckStateChanged( self, item ):
-        
-        self.checkListBoxChanged.emit( self.row( item ) )
-
-
-    def GetChecked( self ):
-
-        result = [ self.item( index ).data( QC.Qt.UserRole ) for index in self.GetCheckedItems() ]
-
-        return result
-
-
-    def SetCheckedData( self, datas ):
-
-        for index in range( self.count() ):
-            
-            data = self.item( index ).data( QC.Qt.UserRole )
-            
-            check_it = data in datas
-            
-            self.Check( index, check_it )
-            
-        
-    
-    def mousePressEvent( self, event ):
-
-        if event.button() == QC.Qt.RightButton:
-
-            self.rightClicked.emit()
-            
-        else:
-
-            QW.QListWidget.mousePressEvent( self, event )
-            
-        
-    
 class RadioBox( QW.QFrame ):
     
     radioBoxChanged = QC.Signal()
@@ -2594,7 +2453,16 @@ class CollectComboCtrl( QW.QComboBox ):
             
             namespaces = media_sort.GetNamespaces()
             
-            text_and_data_tuples.update( namespaces )
+            try:
+                
+                text_and_data_tuples.update( namespaces )
+                
+            except:
+                
+                HydrusData.DebugPrint( 'Bad namespaces: {}'.format( namespaces ) )
+                
+                HydrusData.ShowText( 'Hey, your namespace-based sorts are likely damaged. Details have been written to the log, please let hydev know!' )
+                
             
         
         text_and_data_tuples = sorted( ( ( namespace, ( 'namespace', namespace ) ) for namespace in text_and_data_tuples ) )
@@ -2605,8 +2473,8 @@ class CollectComboCtrl( QW.QComboBox ):
             
             text_and_data_tuples.append( ( ratings_service.GetName(), ('rating', ratings_service.GetServiceKey() ) ) )
             
-
-        for (text, data) in text_and_data_tuples:
+        
+        for ( text, data ) in text_and_data_tuples:
 
             self.Append( text, data )
             
@@ -2637,10 +2505,10 @@ class CollectComboCtrl( QW.QComboBox ):
     
     def GetValues( self ):
 
-        namespaces = [ ]
-        rating_service_keys = [ ]
+        namespaces = []
+        rating_service_keys = []
 
-        for index in self.GetCheckedItems():
+        for index in self.GetCheckedIndices():
 
             (collect_type, collect_data) = self.itemData( index, QC.Qt.UserRole )
 
@@ -2697,7 +2565,7 @@ class CollectComboCtrl( QW.QComboBox ):
                     
                     indices_to_check.append( index )
 
-            self.SetCheckedItems( indices_to_check )
+            self.SetCheckedIndices( indices_to_check )
             
             self.itemChanged.emit()
 
@@ -2708,7 +2576,7 @@ class CollectComboCtrl( QW.QComboBox ):
             HydrusData.ShowException( e )
 
 
-    def SetCheckedItems( self, indices_to_check ):
+    def SetCheckedIndices( self, indices_to_check ):
         
         for idx in range( self.count() ):
 
@@ -2725,7 +2593,7 @@ class CollectComboCtrl( QW.QComboBox ):
             
         
     
-    def GetCheckedItems( self ):
+    def GetCheckedIndices( self ):
         
         indices = []
         

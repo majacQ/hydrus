@@ -6,13 +6,13 @@ import typing
 
 from hydrus.core import HydrusConstants as HC
 from hydrus.core import HydrusData
-from hydrus.core import HydrusDB
-from hydrus.core import HydrusDBModule
+from hydrus.core import HydrusDBBase
 from hydrus.core import HydrusExceptions
 from hydrus.core import HydrusGlobals as HG
 from hydrus.core import HydrusSerialisable
 
 from hydrus.client import ClientConstants as CC
+from hydrus.client.db import ClientDBModule
 from hydrus.client.db import ClientDBServices
 
 YAML_DUMP_ID_SINGLE = 0
@@ -43,7 +43,9 @@ def ExportBrokenHashedJSONDump( db_dir, dump, dump_descriptor ):
         f.write( dump )
         
     
-def DealWithBrokenJSONDump( db_dir, dump, dump_descriptor ):
+def DealWithBrokenJSONDump( db_dir, dump, dump_object_descriptor, dump_descriptor ):
+    
+    HydrusData.Print( 'I am exporting a broken dump. The full object descriptor is: {}'.format( dump_object_descriptor ) )
     
     timestamp_string = time.strftime( '%Y-%m-%d %H-%M-%S' )
     hex_chars = os.urandom( 4 ).hex()
@@ -89,7 +91,7 @@ def GenerateBigSQLiteDumpBuffer( dump ):
     
     if len( dump_bytes ) >= 1000000000: # 1 billion, not 1GB https://sqlite.org/limits.html
         
-        raise Exception( 'A data object could not save to the database because it was bigger than a buffer limit of 1,000,000,000 bytes! If your session has a page with >500k files/URLs, reduce its size NOW or you will lose data! Otherwise, please report this to hydrus dev!' )
+        raise Exception( 'A data object could not save to the database because it was bigger than a buffer limit of 1,000,000,000 bytes! If your session has a page with >500k files/URLs, reduce its size NOW or you will lose it from your session on next load! On a download page, try clicking the arrow on the file log and clearing out successful imports. Otherwise, please report this to hydrus dev!' )
         
     
     try:
@@ -142,52 +144,55 @@ class MaintenanceTracker( object ):
         self._total_new_hashed_serialisable_bytes += num_bytes
         
     
-class ClientDBSerialisable( HydrusDBModule.HydrusDBModule ):
+class ClientDBSerialisable( ClientDBModule.ClientDBModule ):
     
-    def __init__( self, cursor: sqlite3.Cursor, db_dir, cursor_transaction_wrapper: HydrusDB.DBCursorTransactionWrapper, modules_services: ClientDBServices.ClientDBMasterServices ):
+    def __init__( self, cursor: sqlite3.Cursor, db_dir, cursor_transaction_wrapper: HydrusDBBase.DBCursorTransactionWrapper, modules_services: ClientDBServices.ClientDBMasterServices ):
         
-        HydrusDBModule.HydrusDBModule.__init__( self, 'client serialisable', cursor )
+        ClientDBModule.ClientDBModule.__init__( self, 'client serialisable', cursor )
         
         self._db_dir = db_dir
         self._cursor_transaction_wrapper = cursor_transaction_wrapper
         self.modules_services = modules_services
         
     
-    def _GetInitialIndexGenerationTuples( self ):
+    def _GetCriticalTableNames( self ) -> typing.Collection[ str ]:
         
-        index_generation_tuples = []
-        
-        return index_generation_tuples
+        return {
+            'main.json_dict',
+            'main.json_dumps',
+            'main.yaml_dumps'
+        }
         
     
-    def CreateInitialTables( self ):
+    def _GetInitialTableGenerationDict( self ) -> dict:
         
-        self._c.execute( 'CREATE TABLE json_dict ( name TEXT PRIMARY KEY, dump BLOB_BYTES );' )
-        self._c.execute( 'CREATE TABLE json_dumps ( dump_type INTEGER PRIMARY KEY, version INTEGER, dump BLOB_BYTES );' )
-        self._c.execute( 'CREATE TABLE json_dumps_named ( dump_type INTEGER, dump_name TEXT, version INTEGER, timestamp INTEGER, dump BLOB_BYTES, PRIMARY KEY ( dump_type, dump_name, timestamp ) );' )
-        self._c.execute( 'CREATE TABLE json_dumps_hashed ( hash BLOB_BYTES PRIMARY KEY, dump_type INTEGER, version INTEGER, dump BLOB_BYTES );' )
-        
-        self._c.execute( 'CREATE TABLE yaml_dumps ( dump_type INTEGER, dump_name TEXT, dump TEXT_YAML, PRIMARY KEY ( dump_type, dump_name ) );' )
+        return {
+            'main.json_dict' : ( 'CREATE TABLE IF NOT EXISTS {} ( name TEXT PRIMARY KEY, dump BLOB_BYTES );', 400 ),
+            'main.json_dumps' : ( 'CREATE TABLE IF NOT EXISTS {} ( dump_type INTEGER PRIMARY KEY, version INTEGER, dump BLOB_BYTES );', 400 ),
+            'main.json_dumps_named' : ( 'CREATE TABLE IF NOT EXISTS {} ( dump_type INTEGER, dump_name TEXT, version INTEGER, timestamp INTEGER, dump BLOB_BYTES, PRIMARY KEY ( dump_type, dump_name, timestamp ) );', 400 ),
+            'main.json_dumps_hashed' : ( 'CREATE TABLE IF NOT EXISTS {} ( hash BLOB_BYTES PRIMARY KEY, dump_type INTEGER, version INTEGER, dump BLOB_BYTES );', 442 ),
+            'main.yaml_dumps' : ( 'CREATE TABLE IF NOT EXISTS {} ( dump_type INTEGER, dump_name TEXT, dump TEXT_YAML, PRIMARY KEY ( dump_type, dump_name ) );', 400 )
+        }
         
     
     def DeleteJSONDump( self, dump_type ):
         
-        self._c.execute( 'DELETE FROM json_dumps WHERE dump_type = ?;', ( dump_type, ) )
+        self._Execute( 'DELETE FROM json_dumps WHERE dump_type = ?;', ( dump_type, ) )
         
     
     def DeleteJSONDumpNamed( self, dump_type, dump_name = None, timestamp = None ):
         
         if dump_name is None:
             
-            self._c.execute( 'DELETE FROM json_dumps_named WHERE dump_type = ?;', ( dump_type, ) )
+            self._Execute( 'DELETE FROM json_dumps_named WHERE dump_type = ?;', ( dump_type, ) )
             
         elif timestamp is None:
             
-            self._c.execute( 'DELETE FROM json_dumps_named WHERE dump_type = ? AND dump_name = ?;', ( dump_type, dump_name ) )
+            self._Execute( 'DELETE FROM json_dumps_named WHERE dump_type = ? AND dump_name = ?;', ( dump_type, dump_name ) )
             
         else:
             
-            self._c.execute( 'DELETE FROM json_dumps_named WHERE dump_type = ? AND dump_name = ? AND timestamp = ?;', ( dump_type, dump_name, timestamp ) )
+            self._Execute( 'DELETE FROM json_dumps_named WHERE dump_type = ? AND dump_name = ? AND timestamp = ?;', ( dump_type, dump_name, timestamp ) )
             
         
     
@@ -195,20 +200,20 @@ class ClientDBSerialisable( HydrusDBModule.HydrusDBModule ):
         
         if dump_name is None:
             
-            self._c.execute( 'DELETE FROM yaml_dumps WHERE dump_type = ?;', ( dump_type, ) )
+            self._Execute( 'DELETE FROM yaml_dumps WHERE dump_type = ?;', ( dump_type, ) )
             
         else:
             
             if dump_type == YAML_DUMP_ID_LOCAL_BOORU: dump_name = dump_name.hex()
             
-            self._c.execute( 'DELETE FROM yaml_dumps WHERE dump_type = ? AND dump_name = ?;', ( dump_type, dump_name ) )
+            self._Execute( 'DELETE FROM yaml_dumps WHERE dump_type = ? AND dump_name = ?;', ( dump_type, dump_name ) )
             
         
         if dump_type == YAML_DUMP_ID_LOCAL_BOORU:
             
             service_id = self.modules_services.GetServiceId( CC.LOCAL_BOORU_SERVICE_KEY )
             
-            self._c.execute( 'DELETE FROM service_info WHERE service_id = ? AND info_type = ?;', ( service_id, HC.SERVICE_INFO_NUM_SHARES ) )
+            self._Execute( 'DELETE FROM service_info WHERE service_id = ? AND info_type = ?;', ( service_id, HC.SERVICE_INFO_NUM_SHARES ) )
             
             HG.client_controller.pub( 'refresh_local_booru_shares' )
             
@@ -219,7 +224,7 @@ class ClientDBSerialisable( HydrusDBModule.HydrusDBModule ):
         all_expected_hashes = set()
         
         # not the GetJSONDumpNamesToBackupTimestamps call, which excludes the latest save!
-        names_and_timestamps = self._c.execute( 'SELECT dump_name, timestamp FROM json_dumps_named WHERE dump_type = ?;', ( HydrusSerialisable.SERIALISABLE_TYPE_GUI_SESSION_CONTAINER, ) ).fetchall()
+        names_and_timestamps = self._Execute( 'SELECT dump_name, timestamp FROM json_dumps_named WHERE dump_type = ?;', ( HydrusSerialisable.SERIALISABLE_TYPE_GUI_SESSION_CONTAINER, ) ).fetchall()
         
         for ( name, timestamp ) in names_and_timestamps:
             
@@ -231,18 +236,6 @@ class ClientDBSerialisable( HydrusDBModule.HydrusDBModule ):
         return all_expected_hashes
         
     
-    def GetExpectedTableNames( self ) -> typing.Collection[ str ]:
-        
-        expected_table_names = [
-            'json_dict',
-            'json_dumps',
-            'json_dumps_named',
-            'yaml_dumps'
-        ]
-        
-        return expected_table_names
-        
-    
     def GetHashedJSONDumps( self, hashes ):
         
         shown_missing_dump_message = False
@@ -252,7 +245,7 @@ class ClientDBSerialisable( HydrusDBModule.HydrusDBModule ):
         
         for hash in hashes:
             
-            result = self._c.execute( 'SELECT version, dump_type, dump FROM json_dumps_hashed WHERE hash = ?;', ( sqlite3.Binary( hash ), ) ).fetchone()
+            result = self._Execute( 'SELECT version, dump_type, dump FROM json_dumps_hashed WHERE hash = ?;', ( sqlite3.Binary( hash ), ) ).fetchone()
             
             if result is None:
                 
@@ -289,7 +282,7 @@ class ClientDBSerialisable( HydrusDBModule.HydrusDBModule ):
                 
             except:
                 
-                self._c.execute( 'DELETE FROM json_dumps_hashed WHERE hash = ?;', ( sqlite3.Binary( hash ), ) )
+                self._Execute( 'DELETE FROM json_dumps_hashed WHERE hash = ?;', ( sqlite3.Binary( hash ), ) )
                 
                 self._cursor_transaction_wrapper.CommitAndBegin()
                 
@@ -341,7 +334,7 @@ class ClientDBSerialisable( HydrusDBModule.HydrusDBModule ):
     
     def GetJSONDump( self, dump_type ):
         
-        result = self._c.execute( 'SELECT version, dump FROM json_dumps WHERE dump_type = ?;', ( dump_type, ) ).fetchone()
+        result = self._Execute( 'SELECT version, dump FROM json_dumps WHERE dump_type = ?;', ( dump_type, ) ).fetchone()
         
         if result is None:
             
@@ -362,11 +355,11 @@ class ClientDBSerialisable( HydrusDBModule.HydrusDBModule ):
                 
             except:
                 
-                self._c.execute( 'DELETE FROM json_dumps WHERE dump_type = ?;', ( dump_type, ) )
+                self._Execute( 'DELETE FROM json_dumps WHERE dump_type = ?;', ( dump_type, ) )
                 
                 self._cursor_transaction_wrapper.CommitAndBegin()
                 
-                DealWithBrokenJSONDump( self._db_dir, dump, 'dump_type {}'.format( dump_type ) )
+                DealWithBrokenJSONDump( self._db_dir, dump, ( dump_type, version ), 'dump_type {} version {}'.format( dump_type, version ) )
                 
             
             obj = HydrusSerialisable.CreateFromSerialisableTuple( ( dump_type, version, serialisable_info ) )
@@ -392,7 +385,7 @@ class ClientDBSerialisable( HydrusDBModule.HydrusDBModule ):
         
         if dump_name is None:
             
-            results = self._c.execute( 'SELECT dump_name, version, dump, timestamp FROM json_dumps_named WHERE dump_type = ?;', ( dump_type, ) ).fetchall()
+            results = self._Execute( 'SELECT dump_name, version, dump, timestamp FROM json_dumps_named WHERE dump_type = ?;', ( dump_type, ) ).fetchall()
             
             objs = []
             
@@ -411,11 +404,11 @@ class ClientDBSerialisable( HydrusDBModule.HydrusDBModule ):
                     
                 except:
                     
-                    self._c.execute( 'DELETE FROM json_dumps_named WHERE dump_type = ? AND dump_name = ? AND timestamp = ?;', ( dump_type, dump_name, object_timestamp ) )
+                    self._Execute( 'DELETE FROM json_dumps_named WHERE dump_type = ? AND dump_name = ? AND timestamp = ?;', ( dump_type, dump_name, object_timestamp ) )
                     
                     self._cursor_transaction_wrapper.CommitAndBegin()
                     
-                    DealWithBrokenJSONDump( self._db_dir, dump, 'dump_type {} dump_name {} timestamp {}'.format( dump_type, dump_name[:10], timestamp ) )
+                    DealWithBrokenJSONDump( self._db_dir, dump, ( dump_type, dump_name, version, object_timestamp ), 'dump_type {} dump_name {} version {} timestamp {}'.format( dump_type, dump_name[:10], version, object_timestamp ) )
                     
                 
             
@@ -425,11 +418,11 @@ class ClientDBSerialisable( HydrusDBModule.HydrusDBModule ):
             
             if timestamp is None:
                 
-                result = self._c.execute( 'SELECT version, dump, timestamp FROM json_dumps_named WHERE dump_type = ? AND dump_name = ? ORDER BY timestamp DESC;', ( dump_type, dump_name ) ).fetchone()
+                result = self._Execute( 'SELECT version, dump, timestamp FROM json_dumps_named WHERE dump_type = ? AND dump_name = ? ORDER BY timestamp DESC;', ( dump_type, dump_name ) ).fetchone()
                 
             else:
                 
-                result = self._c.execute( 'SELECT version, dump, timestamp FROM json_dumps_named WHERE dump_type = ? AND dump_name = ? AND timestamp = ?;', ( dump_type, dump_name, timestamp ) ).fetchone()
+                result = self._Execute( 'SELECT version, dump, timestamp FROM json_dumps_named WHERE dump_type = ? AND dump_name = ? AND timestamp = ?;', ( dump_type, dump_name, timestamp ) ).fetchone()
                 
             
             if result is None:
@@ -450,11 +443,11 @@ class ClientDBSerialisable( HydrusDBModule.HydrusDBModule ):
                 
             except:
                 
-                self._c.execute( 'DELETE FROM json_dumps_named WHERE dump_type = ? AND dump_name = ? AND timestamp = ?;', ( dump_type, dump_name, object_timestamp ) )
+                self._Execute( 'DELETE FROM json_dumps_named WHERE dump_type = ? AND dump_name = ? AND timestamp = ?;', ( dump_type, dump_name, object_timestamp ) )
                 
                 self._cursor_transaction_wrapper.CommitAndBegin()
                 
-                DealWithBrokenJSONDump( self._db_dir, dump, 'dump_type {} dump_name {} timestamp {}'.format( dump_type, dump_name[:10], object_timestamp ) )
+                DealWithBrokenJSONDump( self._db_dir, dump, ( dump_type, dump_name, version, object_timestamp ), 'dump_type {} dump_name {} version {} timestamp {}'.format( dump_type, dump_name[:10], version, object_timestamp ) )
                 
             
             return HydrusSerialisable.CreateFromSerialisableTuple( ( dump_type, dump_name, version, serialisable_info ) )
@@ -463,14 +456,14 @@ class ClientDBSerialisable( HydrusDBModule.HydrusDBModule ):
     
     def GetJSONDumpNames( self, dump_type ):
         
-        names = [ name for ( name, ) in self._c.execute( 'SELECT DISTINCT dump_name FROM json_dumps_named WHERE dump_type = ?;', ( dump_type, ) ) ]
+        names = [ name for ( name, ) in self._Execute( 'SELECT DISTINCT dump_name FROM json_dumps_named WHERE dump_type = ?;', ( dump_type, ) ) ]
         
         return names
         
     
     def GetJSONDumpNamesToBackupTimestamps( self, dump_type ):
         
-        names_to_backup_timestamps = HydrusData.BuildKeyToListDict( self._c.execute( 'SELECT dump_name, timestamp FROM json_dumps_named WHERE dump_type = ? ORDER BY timestamp ASC;', ( dump_type, ) ) )
+        names_to_backup_timestamps = HydrusData.BuildKeyToListDict( self._Execute( 'SELECT dump_name, timestamp FROM json_dumps_named WHERE dump_type = ? ORDER BY timestamp ASC;', ( dump_type, ) ) )
         
         for ( name, timestamp_list ) in list( names_to_backup_timestamps.items() ):
             
@@ -487,7 +480,7 @@ class ClientDBSerialisable( HydrusDBModule.HydrusDBModule ):
     
     def GetJSONSimple( self, name ):
         
-        result = self._c.execute( 'SELECT dump FROM json_dict WHERE name = ?;', ( name, ) ).fetchone()
+        result = self._Execute( 'SELECT dump FROM json_dict WHERE name = ?;', ( name, ) ).fetchone()
         
         if result is None:
             
@@ -515,7 +508,7 @@ class ClientDBSerialisable( HydrusDBModule.HydrusDBModule ):
         
         if dump_name is None:
             
-            result = { dump_name : data for ( dump_name, data ) in self._c.execute( 'SELECT dump_name, dump FROM yaml_dumps WHERE dump_type = ?;', ( dump_type, ) ) }
+            result = { dump_name : data for ( dump_name, data ) in self._Execute( 'SELECT dump_name, dump FROM yaml_dumps WHERE dump_type = ?;', ( dump_type, ) ) }
             
             if dump_type == YAML_DUMP_ID_LOCAL_BOORU:
                 
@@ -526,7 +519,7 @@ class ClientDBSerialisable( HydrusDBModule.HydrusDBModule ):
             
             if dump_type == YAML_DUMP_ID_LOCAL_BOORU: dump_name = dump_name.hex()
             
-            result = self._c.execute( 'SELECT dump FROM yaml_dumps WHERE dump_type = ? AND dump_name = ?;', ( dump_type, dump_name ) ).fetchone()
+            result = self._Execute( 'SELECT dump FROM yaml_dumps WHERE dump_type = ? AND dump_name = ?;', ( dump_type, dump_name ) ).fetchone()
             
             if result is None:
                 
@@ -546,7 +539,7 @@ class ClientDBSerialisable( HydrusDBModule.HydrusDBModule ):
     
     def GetYAMLDumpNames( self, dump_type ):
         
-        names = [ name for ( name, ) in self._c.execute( 'SELECT dump_name FROM yaml_dumps WHERE dump_type = ?;', ( dump_type, ) ) ]
+        names = [ name for ( name, ) in self._Execute( 'SELECT dump_name FROM yaml_dumps WHERE dump_type = ?;', ( dump_type, ) ) ]
         
         if dump_type == YAML_DUMP_ID_LOCAL_BOORU:
             
@@ -558,9 +551,22 @@ class ClientDBSerialisable( HydrusDBModule.HydrusDBModule ):
     
     def HaveHashedJSONDump( self, hash ):
         
-        result = self._c.execute( 'SELECT 1 FROM json_dumps_hashed WHERE hash = ?;', ( sqlite3.Binary( hash ), ) ).fetchone()
+        result = self._Execute( 'SELECT 1 FROM json_dumps_hashed WHERE hash = ?;', ( sqlite3.Binary( hash ), ) ).fetchone()
         
         return result is not None
+        
+    
+    def HaveHashedJSONDumps( self, hashes ):
+        
+        for hash in hashes:
+            
+            if not self.HaveHashedJSONDump( hash ):
+                
+                return False
+                
+            
+        
+        return True
         
     
     def MaintainHashedStorage( self, force_start = False ):
@@ -577,13 +583,13 @@ class ClientDBSerialisable( HydrusDBModule.HydrusDBModule ):
         
         all_expected_hashes = self.GetAllExpectedHashedJSONHashes()
         
-        all_stored_hashes = self._STS( self._c.execute( 'SELECT hash FROM json_dumps_hashed;' ) )
+        all_stored_hashes = self._STS( self._Execute( 'SELECT hash FROM json_dumps_hashed;' ) )
         
         all_deletee_hashes = all_stored_hashes.difference( all_expected_hashes )
         
         if len( all_deletee_hashes ) > 0:
             
-            self._c.executemany( 'DELETE FROM json_dumps_hashed WHERE hash = ?;', ( ( sqlite3.Binary( hash ), ) for hash in all_deletee_hashes ) )
+            self._ExecuteMany( 'DELETE FROM json_dumps_hashed WHERE hash = ?;', ( ( sqlite3.Binary( hash ), ) for hash in all_deletee_hashes ) )
             
         
         maintenance_tracker.NotifyHashedSerialisableMaintenanceDone()
@@ -636,7 +642,7 @@ class ClientDBSerialisable( HydrusDBModule.HydrusDBModule ):
             
             try:
                 
-                self._c.execute( 'INSERT INTO json_dumps_hashed ( hash, dump_type, version, dump ) VALUES ( ?, ?, ?, ? );', ( sqlite3.Binary( hash ), dump_type, version, dump_buffer ) )
+                self._Execute( 'INSERT INTO json_dumps_hashed ( hash, dump_type, version, dump ) VALUES ( ?, ?, ?, ? );', ( sqlite3.Binary( hash ), dump_type, version, dump_buffer ) )
                 
             except:
                 
@@ -668,9 +674,9 @@ class ClientDBSerialisable( HydrusDBModule.HydrusDBModule ):
             
             if dump_type == HydrusSerialisable.SERIALISABLE_TYPE_GUI_SESSION_CONTAINER:
                 
-                if not obj.HasAllPageData():
+                if not obj.HasAllDirtyPageData():
                     
-                    raise Exception( 'A session with name "{}" was set to save, but it did not have all its page data!'.format( dump_name ) )
+                    raise Exception( 'A session with name "{}" was set to save, but it did not have all its dirty page data!'.format( dump_name ) )
                     
                 
                 hashes_to_page_data = obj.GetHashesToPageData()
@@ -703,7 +709,7 @@ class ClientDBSerialisable( HydrusDBModule.HydrusDBModule ):
                 
                 if store_backups:
                     
-                    existing_timestamps = sorted( self._STI( self._c.execute( 'SELECT timestamp FROM json_dumps_named WHERE dump_type = ? AND dump_name = ?;', ( dump_type, dump_name ) ) ) )
+                    existing_timestamps = sorted( self._STI( self._Execute( 'SELECT timestamp FROM json_dumps_named WHERE dump_type = ? AND dump_name = ?;', ( dump_type, dump_name ) ) ) )
                     
                     if len( existing_timestamps ) > 0:
                         
@@ -721,11 +727,11 @@ class ClientDBSerialisable( HydrusDBModule.HydrusDBModule ):
                     
                     deletee_timestamps.append( object_timestamp ) # if save gets spammed twice in one second, we'll overwrite
                     
-                    self._c.executemany( 'DELETE FROM json_dumps_named WHERE dump_type = ? AND dump_name = ? AND timestamp = ?;', [ ( dump_type, dump_name, timestamp ) for timestamp in deletee_timestamps ] )
+                    self._ExecuteMany( 'DELETE FROM json_dumps_named WHERE dump_type = ? AND dump_name = ? AND timestamp = ?;', [ ( dump_type, dump_name, timestamp ) for timestamp in deletee_timestamps ] )
                     
                 else:
                     
-                    self._c.execute( 'DELETE FROM json_dumps_named WHERE dump_type = ? AND dump_name = ?;', ( dump_type, dump_name ) )
+                    self._Execute( 'DELETE FROM json_dumps_named WHERE dump_type = ? AND dump_name = ?;', ( dump_type, dump_name ) )
                     
                 
             else:
@@ -737,7 +743,7 @@ class ClientDBSerialisable( HydrusDBModule.HydrusDBModule ):
             
             try:
                 
-                self._c.execute( 'INSERT INTO json_dumps_named ( dump_type, dump_name, version, timestamp, dump ) VALUES ( ?, ?, ?, ?, ? );', ( dump_type, dump_name, version, object_timestamp, dump_buffer ) )
+                self._Execute( 'INSERT INTO json_dumps_named ( dump_type, dump_name, version, timestamp, dump ) VALUES ( ?, ?, ?, ?, ? );', ( dump_type, dump_name, version, object_timestamp, dump_buffer ) )
                 
             except:
                 
@@ -826,13 +832,13 @@ class ClientDBSerialisable( HydrusDBModule.HydrusDBModule ):
                 raise Exception( 'Trying to json dump the object ' + str( obj ) + ' caused an error. Its serialisable info has been dumped to the log.' )
                 
             
-            self._c.execute( 'DELETE FROM json_dumps WHERE dump_type = ?;', ( dump_type, ) )
+            self._Execute( 'DELETE FROM json_dumps WHERE dump_type = ?;', ( dump_type, ) )
             
             dump_buffer = GenerateBigSQLiteDumpBuffer( dump )
             
             try:
                 
-                self._c.execute( 'INSERT INTO json_dumps ( dump_type, version, dump ) VALUES ( ?, ?, ? );', ( dump_type, version, dump_buffer ) )
+                self._Execute( 'INSERT INTO json_dumps ( dump_type, version, dump ) VALUES ( ?, ?, ? );', ( dump_type, version, dump_buffer ) )
                 
             except:
                 
@@ -881,7 +887,7 @@ class ClientDBSerialisable( HydrusDBModule.HydrusDBModule ):
         
         if value is None:
             
-            self._c.execute( 'DELETE FROM json_dict WHERE name = ?;', ( name, ) )
+            self._Execute( 'DELETE FROM json_dict WHERE name = ?;', ( name, ) )
             
         else:
             
@@ -891,7 +897,7 @@ class ClientDBSerialisable( HydrusDBModule.HydrusDBModule ):
             
             try:
                 
-                self._c.execute( 'REPLACE INTO json_dict ( name, dump ) VALUES ( ?, ? );', ( name, dump_buffer ) )
+                self._Execute( 'REPLACE INTO json_dict ( name, dump ) VALUES ( ?, ? );', ( name, dump_buffer ) )
                 
             except:
                 
@@ -910,11 +916,11 @@ class ClientDBSerialisable( HydrusDBModule.HydrusDBModule ):
             dump_name = dump_name.hex()
             
         
-        self._c.execute( 'DELETE FROM yaml_dumps WHERE dump_type = ? AND dump_name = ?;', ( dump_type, dump_name ) )
+        self._Execute( 'DELETE FROM yaml_dumps WHERE dump_type = ? AND dump_name = ?;', ( dump_type, dump_name ) )
         
         try:
             
-            self._c.execute( 'INSERT INTO yaml_dumps ( dump_type, dump_name, dump ) VALUES ( ?, ?, ? );', ( dump_type, dump_name, data ) )
+            self._Execute( 'INSERT INTO yaml_dumps ( dump_type, dump_name, dump ) VALUES ( ?, ?, ? );', ( dump_type, dump_name, data ) )
             
         except:
             
@@ -927,7 +933,7 @@ class ClientDBSerialisable( HydrusDBModule.HydrusDBModule ):
             
             service_id = self.modules_services.GetServiceId( CC.LOCAL_BOORU_SERVICE_KEY )
             
-            self._c.execute( 'DELETE FROM service_info WHERE service_id = ? AND info_type = ?;', ( service_id, HC.SERVICE_INFO_NUM_SHARES ) )
+            self._Execute( 'DELETE FROM service_info WHERE service_id = ? AND info_type = ?;', ( service_id, HC.SERVICE_INFO_NUM_SHARES ) )
             
             HG.client_controller.pub( 'refresh_local_booru_shares' )
             

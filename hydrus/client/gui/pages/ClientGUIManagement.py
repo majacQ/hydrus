@@ -17,6 +17,7 @@ from hydrus.client import ClientConstants as CC
 from hydrus.client import ClientData
 from hydrus.client import ClientDefaults
 from hydrus.client import ClientDuplicates
+from hydrus.client import ClientLocation
 from hydrus.client import ClientParsing
 from hydrus.client import ClientPaths
 from hydrus.client import ClientSearch
@@ -50,9 +51,10 @@ from hydrus.client.gui.widgets import ClientGUIMenuButton
 from hydrus.client.importing import ClientImporting
 from hydrus.client.importing import ClientImportGallery
 from hydrus.client.importing import ClientImportLocal
-from hydrus.client.importing import ClientImportOptions
 from hydrus.client.importing import ClientImportSimpleURLs
 from hydrus.client.importing import ClientImportWatchers
+from hydrus.client.importing.options import FileImportOptions
+from hydrus.client.importing.options import PresentationImportOptions
 from hydrus.client.media import ClientMedia
 from hydrus.client.metadata import ClientTags
 
@@ -70,11 +72,69 @@ MANAGEMENT_TYPE_PAGE_OF_PAGES = 10
 
 management_panel_types_to_classes = {}
 
-def CreateManagementController( page_name, management_type, file_service_key = None ):
+def AddPresentationSubmenu( menu: QW.QMenu, importer_name: str, single_selected_presentation_import_options: typing.Optional[ PresentationImportOptions.PresentationImportOptions ], callable ):
     
-    if file_service_key is None:
+    submenu = QW.QMenu( menu )
+    
+    # inbox only
+    # detect single_selected_presentation_import_options and deal with it
+    
+    description = 'Gather these files for the selected importers and show them.'
+    
+    if single_selected_presentation_import_options is None:
         
-        file_service_key = CC.COMBINED_LOCAL_FILE_SERVICE_KEY
+        ClientGUIMenus.AppendMenuItem( submenu, 'default presented files', description, callable )
+        
+    else:
+        
+        ClientGUIMenus.AppendMenuItem( submenu, 'default presented files ({})'.format( single_selected_presentation_import_options.GetSummary() ), description, callable )
+        
+    
+    sets_of_options = []
+    
+    presentation_import_options = PresentationImportOptions.PresentationImportOptions()
+    
+    presentation_import_options.SetPresentationStatus( PresentationImportOptions.PRESENTATION_STATUS_NEW_ONLY )
+    
+    sets_of_options.append( presentation_import_options )
+    
+    presentation_import_options = PresentationImportOptions.PresentationImportOptions()
+    
+    presentation_import_options.SetPresentationInbox( PresentationImportOptions.PRESENTATION_INBOX_REQUIRE_INBOX )
+    
+    sets_of_options.append( presentation_import_options )
+    
+    presentation_import_options = PresentationImportOptions.PresentationImportOptions()
+    
+    sets_of_options.append( presentation_import_options )
+    
+    presentation_import_options = PresentationImportOptions.PresentationImportOptions()
+    
+    presentation_import_options.SetPresentationLocation( PresentationImportOptions.PRESENTATION_LOCATION_IN_TRASH_TOO )
+    
+    sets_of_options.append( presentation_import_options )
+    
+    for presentation_import_options in sets_of_options:
+        
+        if single_selected_presentation_import_options is not None and presentation_import_options == single_selected_presentation_import_options:
+            
+            continue
+            
+        
+        ClientGUIMenus.AppendMenuItem( submenu, presentation_import_options.GetSummary(), description, callable, presentation_import_options = presentation_import_options )
+        
+    
+    importer_label_template = '{}s\'' if single_selected_presentation_import_options is None else '{}\'s'
+    
+    importer_label = importer_label_template.format( importer_name )
+    
+    ClientGUIMenus.AppendMenu( menu, submenu, 'show {} files'.format( importer_label ) )
+    
+def CreateManagementController( page_name, management_type, location_context = None ):
+    
+    if location_context is None:
+        
+        location_context = ClientLocation.GetLocationContextForAllLocalMedia()
         
     
     new_options = HG.client_controller.new_options
@@ -82,24 +142,24 @@ def CreateManagementController( page_name, management_type, file_service_key = N
     management_controller = ManagementController( page_name )
     
     management_controller.SetType( management_type )
-    management_controller.SetKey( 'file_service', file_service_key )
     management_controller.SetVariable( 'media_sort', new_options.GetDefaultSort() )
     management_controller.SetVariable( 'media_collect', new_options.GetDefaultCollect() )
+    management_controller.SetVariable( 'location_context', location_context )
     
     return management_controller
     
 def CreateManagementControllerDuplicateFilter():
     
-    default_local_file_service_key = HG.client_controller.services_manager.GetDefaultLocalFileServiceKey()
+    default_location_context = HG.client_controller.services_manager.GetDefaultLocationContext()
     
-    location_search_context = ClientSearch.LocationSearchContext( current_service_keys = [ default_local_file_service_key ] )
+    management_controller = CreateManagementController( 'duplicates', MANAGEMENT_TYPE_DUPLICATE_FILTER, location_context = default_location_context )
     
-    management_controller = CreateManagementController( 'duplicates', MANAGEMENT_TYPE_DUPLICATE_FILTER, file_service_key = default_local_file_service_key )
-    
-    file_search_context = ClientSearch.FileSearchContext( location_search_context = location_search_context, predicates = [ ClientSearch.Predicate( ClientSearch.PREDICATE_TYPE_SYSTEM_EVERYTHING ) ] )
+    file_search_context = ClientSearch.FileSearchContext( location_context = default_location_context, predicates = [ ClientSearch.Predicate( ClientSearch.PREDICATE_TYPE_SYSTEM_EVERYTHING ) ] )
     
     management_controller.SetVariable( 'file_search_context', file_search_context )
     management_controller.SetVariable( 'both_files_match', False )
+    management_controller.SetVariable( 'pixel_dupes_preference', CC.SIMILAR_FILES_PIXEL_DUPES_ALLOWED )
+    management_controller.SetVariable( 'max_hamming_distance', 4 )
     
     return management_controller
     
@@ -110,11 +170,13 @@ def CreateManagementControllerImportGallery( page_name = None ):
         page_name = 'gallery'
         
     
-    management_controller = CreateManagementController( page_name, MANAGEMENT_TYPE_IMPORT_MULTIPLE_GALLERY, file_service_key = CC.LOCAL_FILE_SERVICE_KEY )
-    
     gug_key_and_name = HG.client_controller.network_engine.domain_manager.GetDefaultGUGKeyAndName()
     
     multiple_gallery_import = ClientImportGallery.MultipleGalleryImport( gug_key_and_name = gug_key_and_name )
+    
+    location_context = multiple_gallery_import.GetFileImportOptions().GetDestinationLocationContext()
+    
+    management_controller = CreateManagementController( page_name, MANAGEMENT_TYPE_IMPORT_MULTIPLE_GALLERY, location_context = location_context )
     
     management_controller.SetVariable( 'multiple_gallery_import', multiple_gallery_import )
     
@@ -122,21 +184,25 @@ def CreateManagementControllerImportGallery( page_name = None ):
     
 def CreateManagementControllerImportSimpleDownloader():
     
-    management_controller = CreateManagementController( 'simple downloader', MANAGEMENT_TYPE_IMPORT_SIMPLE_DOWNLOADER, file_service_key = CC.LOCAL_FILE_SERVICE_KEY )
-    
     simple_downloader_import = ClientImportSimpleURLs.SimpleDownloaderImport()
     
     formula_name = HG.client_controller.new_options.GetString( 'favourite_simple_downloader_formula' )
     
     simple_downloader_import.SetFormulaName( formula_name )
     
+    location_context = simple_downloader_import.GetFileImportOptions().GetDestinationLocationContext()
+    
+    management_controller = CreateManagementController( 'simple downloader', MANAGEMENT_TYPE_IMPORT_SIMPLE_DOWNLOADER, location_context = location_context )
+    
     management_controller.SetVariable( 'simple_downloader_import', simple_downloader_import )
     
     return management_controller
     
-def CreateManagementControllerImportHDD( paths, file_import_options, paths_to_additional_service_keys_to_tags, delete_after_success ):
+def CreateManagementControllerImportHDD( paths, file_import_options: FileImportOptions.FileImportOptions, paths_to_additional_service_keys_to_tags, delete_after_success ):
     
-    management_controller = CreateManagementController( 'import', MANAGEMENT_TYPE_IMPORT_HDD, file_service_key = CC.LOCAL_FILE_SERVICE_KEY )
+    location_context = file_import_options.GetDestinationLocationContext()
+    
+    management_controller = CreateManagementController( 'import', MANAGEMENT_TYPE_IMPORT_HDD, location_context = location_context )
     
     hdd_import = ClientImportLocal.HDDImport( paths = paths, file_import_options = file_import_options, paths_to_additional_service_keys_to_tags = paths_to_additional_service_keys_to_tags, delete_after_success = delete_after_success )
     
@@ -151,9 +217,11 @@ def CreateManagementControllerImportMultipleWatcher( page_name = None, url = Non
         page_name = 'watcher'
         
     
-    management_controller = CreateManagementController( page_name, MANAGEMENT_TYPE_IMPORT_MULTIPLE_WATCHER, file_service_key = CC.LOCAL_FILE_SERVICE_KEY )
-    
     multiple_watcher_import = ClientImportWatchers.MultipleWatcherImport( url = url )
+    
+    location_context = multiple_watcher_import.GetFileImportOptions().GetDestinationLocationContext()
+    
+    management_controller = CreateManagementController( page_name, MANAGEMENT_TYPE_IMPORT_MULTIPLE_WATCHER, location_context = location_context )
     
     management_controller.SetVariable( 'multiple_watcher_import', multiple_watcher_import )
     
@@ -166,9 +234,11 @@ def CreateManagementControllerImportURLs( page_name = None ):
         page_name = 'url import'
         
     
-    management_controller = CreateManagementController( page_name, MANAGEMENT_TYPE_IMPORT_URLS, file_service_key = CC.LOCAL_FILE_SERVICE_KEY )
-    
     urls_import = ClientImportSimpleURLs.URLsImport()
+    
+    location_context = urls_import.GetFileImportOptions().GetDestinationLocationContext()
+    
+    management_controller = CreateManagementController( page_name, MANAGEMENT_TYPE_IMPORT_URLS, location_context = location_context )
     
     management_controller.SetVariable( 'urls_import', urls_import )
     
@@ -184,14 +254,14 @@ def CreateManagementControllerPetitions( petition_service_key ):
     
     if petition_service_type in HC.LOCAL_FILE_SERVICES or petition_service_type == HC.FILE_REPOSITORY:
         
-        file_service_key = petition_service_key
+        location_context = ClientLocation.LocationContext.STATICCreateSimple( petition_service_key )
         
     else:
         
-        file_service_key = CC.COMBINED_FILE_SERVICE_KEY
+        location_context = ClientLocation.LocationContext.STATICCreateSimple( CC.COMBINED_FILE_SERVICE_KEY )
         
     
-    management_controller = CreateManagementController( page_name, MANAGEMENT_TYPE_PETITIONS, file_service_key = file_service_key )
+    management_controller = CreateManagementController( page_name, MANAGEMENT_TYPE_PETITIONS, location_context = location_context )
     
     management_controller.SetKey( 'petition_service', petition_service_key )
     
@@ -199,13 +269,15 @@ def CreateManagementControllerPetitions( petition_service_key ):
     
 def CreateManagementControllerQuery( page_name, file_search_context: ClientSearch.FileSearchContext, search_enabled ):
     
-    file_service_key = file_search_context.GetFileServiceKey()
+    location_context = file_search_context.GetLocationContext()
     
-    management_controller = CreateManagementController( page_name, MANAGEMENT_TYPE_QUERY, file_service_key = file_service_key )
+    management_controller = CreateManagementController( page_name, MANAGEMENT_TYPE_QUERY, location_context = location_context )
+    
+    synchronised = HG.client_controller.new_options.GetBoolean( 'default_search_synchronised' )
     
     management_controller.SetVariable( 'file_search_context', file_search_context )
     management_controller.SetVariable( 'search_enabled', search_enabled )
-    management_controller.SetVariable( 'synchronised', True )
+    management_controller.SetVariable( 'synchronised', synchronised )
     
     return management_controller
     
@@ -213,7 +285,7 @@ class ManagementController( HydrusSerialisable.SerialisableBase ):
     
     SERIALISABLE_TYPE = HydrusSerialisable.SERIALISABLE_TYPE_MANAGEMENT_CONTROLLER
     SERIALISABLE_NAME = 'Client Page Management Controller'
-    SERIALISABLE_VERSION = 10
+    SERIALISABLE_VERSION = 11
     
     def __init__( self, page_name = 'page' ):
         
@@ -222,6 +294,8 @@ class ManagementController( HydrusSerialisable.SerialisableBase ):
         self._page_name = page_name
         
         self._management_type = None
+        
+        self._last_serialisable_change_timestamp = 0
         
         self._keys = {}
         self._simples = {}
@@ -258,19 +332,16 @@ class ManagementController( HydrusSerialisable.SerialisableBase ):
         
         self._InitialiseDefaults()
         
-        self._keys.update( { name : bytes.fromhex( key ) for ( name, key ) in list(serialisable_keys.items()) } )
-        
-        if 'file_service' in self._keys and HG.client_controller.IsBooted():
-            
-            if not HG.client_controller.services_manager.ServiceExists( self._keys[ 'file_service' ] ):
-                
-                self._keys[ 'file_service' ] = CC.COMBINED_LOCAL_FILE_SERVICE_KEY
-                
-            
+        self._keys.update( { name : bytes.fromhex( key ) for ( name, key ) in serialisable_keys.items() } )
         
         self._simples.update( dict( serialisable_simples ) )
         
         self._serialisables.update( { name : HydrusSerialisable.CreateFromSerialisableTuple( value ) for ( name, value ) in list(serialisable_serialisables.items()) } )
+        
+    
+    def _SerialisableChangeMade( self ):
+        
+        self._last_serialisable_change_timestamp = HydrusData.GetNow()
         
     
     def _UpdateSerialisableInfo( self, version, old_serialisable_info ):
@@ -299,12 +370,13 @@ class ManagementController( HydrusSerialisable.SerialisableBase ):
                 max_resolution = None
                 
                 automatic_archive = advanced_import_options[ 'automatic_archive' ]
+                associate_primary_urls = True
                 associate_source_urls = True
                 
-                file_import_options = ClientImportOptions.FileImportOptions()
+                file_import_options = FileImportOptions.FileImportOptions()
                 
                 file_import_options.SetPreImportOptions( exclude_deleted, do_not_check_known_urls_before_importing, do_not_check_hashes_before_importing, allow_decompression_bombs, min_size, max_size, max_gif_size, min_resolution, max_resolution )
-                file_import_options.SetPostImportOptions( automatic_archive, associate_source_urls )
+                file_import_options.SetPostImportOptions( automatic_archive, associate_primary_urls, associate_source_urls )
                 
                 paths_to_tags = { path : { bytes.fromhex( service_key ) : tags for ( service_key, tags ) in additional_service_keys_to_tags } for ( path, additional_service_keys_to_tags ) in paths_to_tags.items() }
                 
@@ -433,9 +505,9 @@ class ManagementController( HydrusSerialisable.SerialisableBase ):
                     del serialisable_keys[ 'duplicate_filter_file_domain' ]
                     
                 
-                location_search_context = ClientSearch.LocationSearchContext( current_service_keys = [ CC.LOCAL_FILE_SERVICE_KEY ] )
+                location_context = ClientLocation.LocationContext.STATICCreateSimple( CC.LOCAL_FILE_SERVICE_KEY )
                 
-                file_search_context = ClientSearch.FileSearchContext( location_search_context = location_search_context, predicates = [ ClientSearch.Predicate( ClientSearch.PREDICATE_TYPE_SYSTEM_EVERYTHING ) ] )
+                file_search_context = ClientSearch.FileSearchContext( location_context = location_context, predicates = [ ClientSearch.Predicate( ClientSearch.PREDICATE_TYPE_SYSTEM_EVERYTHING ) ] )
                 
                 serialisable_serialisables[ 'file_search_context' ] = file_search_context.GetSerialisableTuple()
                 
@@ -481,6 +553,35 @@ class ManagementController( HydrusSerialisable.SerialisableBase ):
             new_serialisable_info = ( page_name, management_type, serialisable_keys, serialisable_simples, serialisable_serialisables )
             
             return ( 10, new_serialisable_info )
+            
+        
+        if version == 10:
+            
+            ( page_name, management_type, serialisable_keys, serialisable_simples, serialisable_serialisables ) = old_serialisable_info
+            
+            if 'file_service' in serialisable_keys:
+                
+                file_service_key_encoded = serialisable_keys[ 'file_service' ]
+                
+                try:
+                    
+                    file_service_key = bytes.fromhex( file_service_key_encoded )
+                    
+                except:
+                    
+                    file_service_key = CC.COMBINED_LOCAL_FILE_SERVICE_KEY
+                    
+                
+                del serialisable_keys[ 'file_service' ]
+                
+                location_context = ClientLocation.LocationContext.STATICCreateSimple( file_service_key )
+                
+                serialisable_serialisables[ 'location_context' ] = location_context.GetSerialisableTuple()
+                
+            
+            new_serialisable_info = ( page_name, management_type, serialisable_keys, serialisable_simples, serialisable_serialisables )
+            
+            return ( 11, new_serialisable_info )
             
         
     
@@ -582,45 +683,42 @@ class ManagementController( HydrusSerialisable.SerialisableBase ):
     
     def GetValueRange( self ):
         
-        try:
+        if self.IsImporter():
             
-            if self._management_type == MANAGEMENT_TYPE_IMPORT_HDD:
+            try:
                 
-                hdd_import = self._serialisables[ 'hdd_import' ]
+                if self._management_type == MANAGEMENT_TYPE_IMPORT_HDD:
+                    
+                    importer = self._serialisables[ 'hdd_import' ]
+                    
+                elif self._management_type == MANAGEMENT_TYPE_IMPORT_SIMPLE_DOWNLOADER:
+                    
+                    importer = self._serialisables[ 'simple_downloader_import' ]
+                    
+                elif self._management_type == MANAGEMENT_TYPE_IMPORT_MULTIPLE_GALLERY:
+                    
+                    importer = self._serialisables[ 'multiple_gallery_import' ]
+                    
+                elif self._management_type == MANAGEMENT_TYPE_IMPORT_MULTIPLE_WATCHER:
+                    
+                    importer = self._serialisables[ 'multiple_watcher_import' ]
+                    
+                elif self._management_type == MANAGEMENT_TYPE_IMPORT_URLS:
+                    
+                    importer = self._serialisables[ 'urls_import' ]
+                    
                 
-                return hdd_import.GetValueRange()
+                return importer.GetValueRange()
                 
-            elif self._management_type == MANAGEMENT_TYPE_IMPORT_SIMPLE_DOWNLOADER:
+            except KeyError:
                 
-                simple_downloader_import = self._serialisables[ 'simple_downloader_import' ]
-                
-                return simple_downloader_import.GetValueRange()
-                
-            elif self._management_type == MANAGEMENT_TYPE_IMPORT_MULTIPLE_GALLERY:
-                
-                multiple_gallery_import = self._serialisables[ 'multiple_gallery_import' ]
-                
-                return multiple_gallery_import.GetValueRange()
-                
-            elif self._management_type == MANAGEMENT_TYPE_IMPORT_MULTIPLE_WATCHER:
-                
-                multiple_watcher_import = self._serialisables[ 'multiple_watcher_import' ]
-                
-                return multiple_watcher_import.GetValueRange()
-                
-            elif self._management_type == MANAGEMENT_TYPE_IMPORT_URLS:
-                
-                urls_import = self._serialisables[ 'urls_import' ]
-                
-                return urls_import.GetValueRange()
+                return ( 0, 0 )
                 
             
-        except KeyError:
+        else:
             
             return ( 0, 0 )
             
-        
-        return ( 0, 0 )
         
     
     def GetVariable( self, name ):
@@ -633,6 +731,40 @@ class ManagementController( HydrusSerialisable.SerialisableBase ):
             
             return self._serialisables[ name ]
             
+        
+    
+    def HasSerialisableChangesSince( self, since_timestamp ):
+        
+        if self.IsImporter():
+            
+            if self._management_type == MANAGEMENT_TYPE_IMPORT_HDD:
+                
+                importer = self._serialisables[ 'hdd_import' ]
+                
+            elif self._management_type == MANAGEMENT_TYPE_IMPORT_SIMPLE_DOWNLOADER:
+                
+                importer = self._serialisables[ 'simple_downloader_import' ]
+                
+            elif self._management_type == MANAGEMENT_TYPE_IMPORT_MULTIPLE_GALLERY:
+                
+                importer = self._serialisables[ 'multiple_gallery_import' ]
+                
+            elif self._management_type == MANAGEMENT_TYPE_IMPORT_MULTIPLE_WATCHER:
+                
+                importer = self._serialisables[ 'multiple_watcher_import' ]
+                
+            elif self._management_type == MANAGEMENT_TYPE_IMPORT_URLS:
+                
+                importer = self._serialisables[ 'urls_import' ]
+                
+            
+            if importer.HasSerialisableChangesSince( since_timestamp ):
+                
+                return True
+                
+            
+        
+        return self._last_serialisable_change_timestamp > since_timestamp
         
     
     def HasVariable( self, name ):
@@ -649,10 +781,17 @@ class ManagementController( HydrusSerialisable.SerialisableBase ):
         
         self._keys[ name ] = key
         
+        self._SerialisableChangeMade()
+        
     
     def SetPageName( self, name ):
         
-        self._page_name = name
+        if name != self._page_name:
+            
+            self._page_name = name
+            
+            self._SerialisableChangeMade()
+            
         
     
     def SetType( self, management_type ):
@@ -661,16 +800,28 @@ class ManagementController( HydrusSerialisable.SerialisableBase ):
         
         self._InitialiseDefaults()
         
+        self._SerialisableChangeMade()
+        
     
     def SetVariable( self, name, value ):
         
         if isinstance( value, HydrusSerialisable.SerialisableBase ):
             
-            self._serialisables[ name ] = value
+            if name not in self._serialisables or value.DumpToString() != self._serialisables[ name ].DumpToString():
+                
+                self._serialisables[ name ] = value
+            
+                self._SerialisableChangeMade()
+                
             
         else:
             
-            self._simples[ name ] = value
+            if name not in self._simples or value != self._simples[ name ]:
+                
+                self._simples[ name ] = value
+                
+                self._SerialisableChangeMade()
+                
             
         
     
@@ -689,15 +840,20 @@ class ListBoxTagsMediaManagementPanel( ClientGUIListBoxes.ListBoxTagsMedia ):
         self._tag_autocomplete = tag_autocomplete
         
     
-    def _Activate( self, shift_down ) -> bool:
+    def _Activate( self, ctrl_down, shift_down ) -> bool:
         
         predicates = self._GetPredicatesFromTerms( self._selected_terms )
         
         if len( predicates ) > 0:
             
+            if ctrl_down:
+                
+                predicates = [ predicate.GetInverseCopy() for predicate in predicates ]
+                
+            
             if shift_down and len( predicates ) > 1:
                 
-                predicates = ( ClientSearch.Predicate( ClientSearch.PREDICATE_TYPE_OR_CONTAINER, predicates ), )
+                predicates = ( ClientSearch.Predicate( ClientSearch.PREDICATE_TYPE_OR_CONTAINER, value = predicates ), )
                 
             
             HG.client_controller.pub( 'enter_predicates', self._page_key, predicates )
@@ -713,9 +869,9 @@ class ListBoxTagsMediaManagementPanel( ClientGUIListBoxes.ListBoxTagsMedia ):
         return self._tag_autocomplete is not None
         
     
-    def _GetCurrentFileServiceKey( self ):
+    def _GetCurrentLocationContext( self ):
         
-        return self._management_controller.GetKey( 'file_service' )
+        return self._management_controller.GetVariable( 'location_context' )
         
     
     def _GetCurrentPagePredicates( self ) -> typing.Set[ ClientSearch.Predicate ]:
@@ -732,7 +888,7 @@ class ListBoxTagsMediaManagementPanel( ClientGUIListBoxes.ListBoxTagsMedia ):
     
     def _ProcessMenuPredicateEvent( self, command ):
         
-        ( predicates, or_predicate, inverse_predicates ) = self._GetSelectedPredicatesAndInverseCopies()
+        ( predicates, or_predicate, inverse_predicates, namespace_predicate, inverse_namespace_predicate ) = self._GetSelectedPredicatesAndInverseCopies()
         
         p = None
         permit_remove = True
@@ -763,6 +919,16 @@ class ListBoxTagsMediaManagementPanel( ClientGUIListBoxes.ListBoxTagsMedia ):
             p = predicates
             permit_add = False
             
+        elif command == 'add_namespace_predicate':
+            
+            p = ( namespace_predicate, )
+            permit_remove = False
+            
+        elif command == 'add_inverse_namespace_predicate':
+            
+            p = ( inverse_namespace_predicate, )
+            permit_remove = False
+            
         
         if p is not None:
             
@@ -776,7 +942,7 @@ def managementScrollbarValueChanged( value ):
     
 class ManagementPanel( QW.QScrollArea ):
     
-    fileServiceChanged = QC.Signal( bytes )
+    locationChanged = QC.Signal( ClientLocation.LocationContext )
     
     SHOW_COLLECT = True
     
@@ -819,11 +985,11 @@ class ManagementPanel( QW.QScrollArea ):
         return 'empty page'
         
     
-    def _SetFileServiceKey( self, file_service_key: bytes ):
+    def _SetLocationContext( self, location_context: ClientLocation.LocationContext ):
         
-        self._management_controller.SetKey( 'file_service', file_service_key )
+        self._management_controller.SetVariable( 'location_context', location_context )
         
-        self.fileServiceChanged.emit( file_service_key )
+        self.locationChanged.emit( location_context )
         
     
     def ConnectMediaPanelSignals( self, media_panel: ClientGUIResults.MediaPanel ):
@@ -855,15 +1021,15 @@ class ManagementPanel( QW.QScrollArea ):
         return self._media_sort.GetSort()
         
     
-    def _MakeCurrentSelectionTagsBox( self, sizer ):
+    def _MakeCurrentSelectionTagsBox( self, sizer, tag_display_type = ClientTags.TAG_DISPLAY_SELECTION_LIST ):
         
-        tags_box = ClientGUIListBoxes.StaticBoxSorterForListBoxTags( self, 'selection tags' )
+        self._current_selection_tags_box = ClientGUIListBoxes.StaticBoxSorterForListBoxTags( self, 'selection tags' )
         
-        self._current_selection_tags_list = ListBoxTagsMediaManagementPanel( tags_box, self._management_controller, self._page_key )
+        self._current_selection_tags_list = ListBoxTagsMediaManagementPanel( self._current_selection_tags_box, self._management_controller, self._page_key, tag_display_type = tag_display_type )
         
-        tags_box.SetTagsBox( self._current_selection_tags_list )
+        self._current_selection_tags_box.SetTagsBox( self._current_selection_tags_list )
         
-        QP.AddToLayout( sizer, tags_box, CC.FLAGS_EXPAND_BOTH_WAYS )
+        QP.AddToLayout( sizer, self._current_selection_tags_box, CC.FLAGS_EXPAND_BOTH_WAYS )
         
     
     def CheckAbleToClose( self ):
@@ -883,9 +1049,9 @@ class ManagementPanel( QW.QScrollArea ):
     
     def GetDefaultEmptyMediaPanel( self ) -> ClientGUIResults.MediaPanel:
         
-        file_service_key = self._management_controller.GetKey( 'file_service' )
+        location_context = self._management_controller.GetVariable( 'location_context' )
         
-        media_panel = ClientGUIResults.MediaPanelThumbnails( self._page, self._page_key, file_service_key, [] )
+        media_panel = ClientGUIResults.MediaPanelThumbnails( self._page, self._page_key, location_context, [] )
         
         status = self._GetDefaultEmptyPageStatusOverride()
         
@@ -952,6 +1118,8 @@ class ManagementPanelDuplicateFilter( ManagementPanel ):
         self._potential_file_search_currently_happening = False
         self._maintenance_numbers_need_redrawing = True
         
+        self._potential_duplicates_count = 0
+        
         self._have_done_first_maintenance_numbers_show = False
         
         new_options = self._controller.new_options
@@ -999,14 +1167,15 @@ class ManagementPanelDuplicateFilter( ManagementPanel ):
         
         menu_items = []
         
-        menu_items.append( ( 'normal', 'exact match', 'Search for exact matches.', HydrusData.Call( self._SetSearchDistance, HC.HAMMING_EXACT_MATCH ) ) )
-        menu_items.append( ( 'normal', 'very similar', 'Search for very similar files.', HydrusData.Call( self._SetSearchDistance, HC.HAMMING_VERY_SIMILAR ) ) )
-        menu_items.append( ( 'normal', 'similar', 'Search for similar files.', HydrusData.Call( self._SetSearchDistance, HC.HAMMING_SIMILAR ) ) )
-        menu_items.append( ( 'normal', 'speculative', 'Search for files that are probably similar.', HydrusData.Call( self._SetSearchDistance, HC.HAMMING_SPECULATIVE ) ) )
+        menu_items.append( ( 'normal', 'exact match', 'Search for exact matches.', HydrusData.Call( self._SetSearchDistance, CC.HAMMING_EXACT_MATCH ) ) )
+        menu_items.append( ( 'normal', 'very similar', 'Search for very similar files.', HydrusData.Call( self._SetSearchDistance, CC.HAMMING_VERY_SIMILAR ) ) )
+        menu_items.append( ( 'normal', 'similar', 'Search for similar files.', HydrusData.Call( self._SetSearchDistance, CC.HAMMING_SIMILAR ) ) )
+        menu_items.append( ( 'normal', 'speculative', 'Search for files that are probably similar.', HydrusData.Call( self._SetSearchDistance, CC.HAMMING_SPECULATIVE ) ) )
         
         self._search_distance_button = ClientGUIMenuButton.MenuButton( self._searching_panel, 'similarity', menu_items )
         
         self._search_distance_spinctrl = QP.MakeQSpinBox( self._searching_panel, min=0, max=64, width = 50 )
+        self._search_distance_spinctrl.setSingleStep( 2 )
         
         self._num_searched = ClientGUICommon.TextAndGauge( self._searching_panel )
         
@@ -1032,11 +1201,21 @@ class ManagementPanelDuplicateFilter( ManagementPanel ):
         
         file_search_context = management_controller.GetVariable( 'file_search_context' )
         
-        file_search_context.FixMissingServices( HG.client_controller.services_manager )
+        file_search_context.FixMissingServices( HG.client_controller.services_manager.FilterValidServiceKeys )
         
         self._tag_autocomplete = ClientGUIACDropdown.AutoCompleteDropdownTagsRead( self._filtering_panel, self._page_key, file_search_context, media_sort_widget = self._media_sort, media_collect_widget = self._media_collect, allow_all_known_files = False, force_system_everything = True )
         
         self._both_files_match = QW.QCheckBox( self._filtering_panel )
+        
+        self._pixel_dupes_preference = ClientGUICommon.BetterChoice( self._filtering_panel )
+        
+        for p in ( CC.SIMILAR_FILES_PIXEL_DUPES_REQUIRED, CC.SIMILAR_FILES_PIXEL_DUPES_ALLOWED, CC.SIMILAR_FILES_PIXEL_DUPES_EXCLUDED ):
+            
+            self._pixel_dupes_preference.addItem( CC.similar_files_pixel_dupes_string_lookup[ p ], p )
+            
+        
+        self._max_hamming_distance = QP.MakeQSpinBox( self._filtering_panel, min = 0, max = 64 )
+        self._max_hamming_distance.setSingleStep( 2 )
         
         self._num_potential_duplicates = ClientGUICommon.BetterStaticText( self._filtering_panel, ellipsize_end = True )
         self._refresh_dupe_counts_button = ClientGUICommon.BetterBitmapButton( self._filtering_panel, CC.global_pixmaps().refresh, self.RefreshDuplicateNumbers )
@@ -1065,9 +1244,27 @@ class ManagementPanelDuplicateFilter( ManagementPanel ):
         
         self._both_files_match.setChecked( management_controller.GetVariable( 'both_files_match' ) )
         
-        self._both_files_match.clicked.connect( self.EventBothFilesHitChanged )
+        self._both_files_match.clicked.connect( self.EventSearchDomainChanged )
         
         self._UpdateBothFilesMatchButton()
+        
+        if not management_controller.HasVariable( 'pixel_dupes_preference' ):
+            
+            management_controller.SetVariable( 'pixel_dupes_preference', CC.SIMILAR_FILES_PIXEL_DUPES_ALLOWED )
+            
+        
+        self._pixel_dupes_preference.SetValue( management_controller.GetVariable( 'pixel_dupes_preference' ) )
+        
+        self._pixel_dupes_preference.currentIndexChanged.connect( self.EventSearchDomainChanged )
+        
+        if not management_controller.HasVariable( 'max_hamming_distance' ):
+            
+            management_controller.SetVariable( 'max_hamming_distance', 4 )
+            
+        
+        self._max_hamming_distance.setValue( management_controller.GetVariable( 'max_hamming_distance' ) )
+        
+        self._max_hamming_distance.valueChanged.connect( self.EventSearchDomainChanged )
         
         #
         
@@ -1117,11 +1314,13 @@ class ManagementPanelDuplicateFilter( ManagementPanel ):
         rows = []
         
         rows.append( ( 'both files of pair match in search: ', self._both_files_match ) )
+        rows.append( ( 'maximum search distance of pair: ', self._max_hamming_distance ) )
         
         gridbox = ClientGUICommon.WrapInGrid( self._filtering_panel, rows )
         
         self._filtering_panel.Add( self._tag_autocomplete, CC.FLAGS_EXPAND_PERPENDICULAR )
         self._filtering_panel.Add( gridbox, CC.FLAGS_EXPAND_SIZER_PERPENDICULAR )
+        self._filtering_panel.Add( self._pixel_dupes_preference, CC.FLAGS_EXPAND_PERPENDICULAR )
         self._filtering_panel.Add( text_and_button_hbox, CC.FLAGS_EXPAND_PERPENDICULAR )
         self._filtering_panel.Add( self._launch_filter, CC.FLAGS_EXPAND_PERPENDICULAR )
         
@@ -1175,22 +1374,26 @@ class ManagementPanelDuplicateFilter( ManagementPanel ):
             
         
     
-    def _GetFileSearchContextAndBothFilesMatch( self ) -> typing.Tuple[ ClientSearch.FileSearchContext, bool ]:
+    def _GetDuplicateFileSearchData( self ) -> typing.Tuple[ ClientSearch.FileSearchContext, bool ]:
         
         file_search_context = self._tag_autocomplete.GetFileSearchContext()
         
         both_files_match = self._both_files_match.isChecked()
         
-        return ( file_search_context, both_files_match )
+        pixel_dupes_preference = self._pixel_dupes_preference.GetValue()
+        
+        max_hamming_distance = self._max_hamming_distance.value()
+        
+        return ( file_search_context, both_files_match, pixel_dupes_preference, max_hamming_distance )
         
     
     def _LaunchFilter( self ):
         
-        ( file_search_context, both_files_match ) = self._GetFileSearchContextAndBothFilesMatch()
+        ( file_search_context, both_files_match, pixel_dupes_preference, max_hamming_distance ) = self._GetDuplicateFileSearchData()
         
         canvas_frame = ClientGUICanvasFrame.CanvasFrame( self.window() )
         
-        canvas_window = ClientGUICanvas.CanvasFilterDuplicates( canvas_frame, file_search_context, both_files_match )
+        canvas_window = ClientGUICanvas.CanvasFilterDuplicates( canvas_frame, file_search_context, both_files_match, pixel_dupes_preference, max_hamming_distance )
         
         canvas_frame.SetCanvas( canvas_window )
         
@@ -1213,9 +1416,9 @@ class ManagementPanelDuplicateFilter( ManagementPanel ):
             self._UpdatePotentialDuplicatesCount( potential_duplicates_count )
             
         
-        def thread_do_it( file_search_context, both_files_match ):
+        def thread_do_it( file_search_context, both_files_match, pixel_dupes_preference, max_hamming_distance ):
             
-            potential_duplicates_count = HG.client_controller.Read( 'potential_duplicates_count', file_search_context, both_files_match )
+            potential_duplicates_count = HG.client_controller.Read( 'potential_duplicates_count', file_search_context, both_files_match, pixel_dupes_preference, max_hamming_distance )
             
             QP.CallAfter( qt_code, potential_duplicates_count )
             
@@ -1228,9 +1431,9 @@ class ManagementPanelDuplicateFilter( ManagementPanel ):
             
             self._num_potential_duplicates.setText( 'updating\u2026' )
             
-            ( file_search_context, both_files_match ) = self._GetFileSearchContextAndBothFilesMatch()
+            ( file_search_context, both_files_match, pixel_dupes_preference, max_hamming_distance ) = self._GetDuplicateFileSearchData()
             
-            HG.client_controller.CallToThread( thread_do_it, file_search_context, both_files_match )
+            HG.client_controller.CallToThread( thread_do_it, file_search_context, both_files_match, pixel_dupes_preference, max_hamming_distance )
             
         
     
@@ -1252,12 +1455,14 @@ class ManagementPanelDuplicateFilter( ManagementPanel ):
     
     def _SearchDomainUpdated( self ):
         
-        ( file_search_context, both_files_match ) = self._GetFileSearchContextAndBothFilesMatch()
+        ( file_search_context, both_files_match, pixel_dupes_preference, max_hamming_distance ) = self._GetDuplicateFileSearchData()
         
         self._management_controller.SetVariable( 'file_search_context', file_search_context )
         self._management_controller.SetVariable( 'both_files_match', both_files_match )
+        self._management_controller.SetVariable( 'pixel_dupes_preference', pixel_dupes_preference )
+        self._management_controller.SetVariable( 'max_hamming_distance', max_hamming_distance )
         
-        self._SetFileServiceKey( file_search_context.GetFileServiceKey() )
+        self._SetLocationContext( file_search_context.GetLocationContext() )
         
         self._UpdateBothFilesMatchButton()
         
@@ -1277,7 +1482,14 @@ class ManagementPanelDuplicateFilter( ManagementPanel ):
             
             self._dupe_count_numbers_dirty = True
             
-            self._ShowRandomPotentialDupes()
+            if self._potential_duplicates_count > 1:
+                
+                self._ShowRandomPotentialDupes()
+                
+            else:
+                
+                self._ShowPotentialDupes( [] )
+                
             
         
     
@@ -1288,28 +1500,42 @@ class ManagementPanelDuplicateFilter( ManagementPanel ):
         self._UpdateMaintenanceStatus()
         
     
-    def _ShowRandomPotentialDupes( self ):
+    def _ShowPotentialDupes( self, hashes ):
         
-        ( file_search_context, both_files_match ) = self._GetFileSearchContextAndBothFilesMatch()
+        ( file_search_context, both_files_match, pixel_dupes_preference, max_hamming_distance ) = self._GetDuplicateFileSearchData()
         
-        file_service_key = file_search_context.GetFileServiceKey()
+        location_context = file_search_context.GetLocationContext()
         
-        hashes = self._controller.Read( 'random_potential_duplicate_hashes', file_search_context, both_files_match )
+        self._SetLocationContext( location_context )
         
-        if len( hashes ) == 0:
+        if len( hashes ) > 0:
             
-            QW.QMessageBox.critical( self, 'Error', 'No files were found. Try refreshing the count, and if this keeps happening, please let hydrus_dev know.' )
+            media_results = self._controller.Read( 'media_results', hashes, sorted = True )
             
-            return
+        else:
+            
+            media_results = []
             
         
-        media_results = self._controller.Read( 'media_results', hashes, sorted = True )
-        
-        panel = ClientGUIResults.MediaPanelThumbnails( self._page, self._page_key, file_service_key, media_results )
+        panel = ClientGUIResults.MediaPanelThumbnails( self._page, self._page_key, location_context, media_results )
         
         panel.SetEmptyPageStatusOverride( 'no dupes found' )
         
         self._page.SwapMediaPanel( panel )
+        
+    
+    def _ShowRandomPotentialDupes( self ):
+        
+        ( file_search_context, both_files_match, pixel_dupes_preference, max_hamming_distance ) = self._GetDuplicateFileSearchData()
+        
+        hashes = self._controller.Read( 'random_potential_duplicate_hashes', file_search_context, both_files_match, pixel_dupes_preference, max_hamming_distance )
+        
+        if len( hashes ) == 0:
+            
+            HydrusData.ShowText( 'No files were found. Try refreshing the count, and if this keeps happening, please let hydrus_dev know.' )
+            
+        
+        self._ShowPotentialDupes( hashes )
         
     
     def _UpdateMaintenanceStatus( self ):
@@ -1343,9 +1569,9 @@ class ManagementPanelDuplicateFilter( ManagementPanel ):
         
         search_distance = self._search_distance_spinctrl.value()
         
-        if search_distance in HC.hamming_string_lookup:
+        if search_distance in CC.hamming_string_lookup:
             
-            button_label = HC.hamming_string_lookup[ search_distance ]
+            button_label = CC.hamming_string_lookup[ search_distance ]
             
         else:
             
@@ -1394,7 +1620,7 @@ class ManagementPanelDuplicateFilter( ManagementPanel ):
     
     def _UpdateBothFilesMatchButton( self ):
         
-        ( file_search_context, both_files_match ) = self._GetFileSearchContextAndBothFilesMatch()
+        ( file_search_context, both_files_match, pixel_dupes_preference, max_hamming_distance ) = self._GetDuplicateFileSearchData()
         
         if file_search_context.IsJustSystemEverything() or file_search_context.HasNoPredicates():
             
@@ -1408,9 +1634,11 @@ class ManagementPanelDuplicateFilter( ManagementPanel ):
     
     def _UpdatePotentialDuplicatesCount( self, potential_duplicates_count ):
         
+        self._potential_duplicates_count = potential_duplicates_count
+        
         self._num_potential_duplicates.setText( '{} potential pairs.'.format( HydrusData.ToHumanInt( potential_duplicates_count ) ) )
         
-        if potential_duplicates_count > 0:
+        if self._potential_duplicates_count > 0:
             
             self._show_some_dupes.setEnabled( True )
             self._launch_filter.setEnabled( True )
@@ -1422,7 +1650,7 @@ class ManagementPanelDuplicateFilter( ManagementPanel ):
             
         
     
-    def EventBothFilesHitChanged( self ):
+    def EventSearchDomainChanged( self ):
         
         self._SearchDomainUpdated()
         
@@ -1533,7 +1761,7 @@ class ManagementPanelImporterHDD( ManagementPanelImporter ):
         
         ManagementPanelImporter.__init__( self, parent, page, controller, management_controller )
         
-        self._import_queue_panel = ClientGUICommon.StaticBox( self, 'import summary' )
+        self._import_queue_panel = ClientGUICommon.StaticBox( self, 'imports' )
         
         self._current_action = ClientGUICommon.BetterStaticText( self._import_queue_panel, ellipsize_end = True )
         
@@ -1555,9 +1783,13 @@ class ManagementPanelImporterHDD( ManagementPanelImporter ):
         
         QP.AddToLayout( vbox, self._media_sort, CC.FLAGS_EXPAND_PERPENDICULAR )
         
-        self._import_queue_panel.Add( self._current_action, CC.FLAGS_EXPAND_PERPENDICULAR )
+        hbox = QP.HBoxLayout()
+        
+        QP.AddToLayout( hbox, self._current_action, CC.FLAGS_CENTER_PERPENDICULAR_EXPAND_DEPTH )
+        QP.AddToLayout( hbox, self._pause_button, CC.FLAGS_CENTER_PERPENDICULAR )
+        
+        self._import_queue_panel.Add( hbox, CC.FLAGS_EXPAND_SIZER_PERPENDICULAR )
         self._import_queue_panel.Add( self._file_seed_cache_control, CC.FLAGS_EXPAND_PERPENDICULAR )
-        self._import_queue_panel.Add( self._pause_button, CC.FLAGS_ON_RIGHT )
         self._import_queue_panel.Add( self._file_import_options, CC.FLAGS_EXPAND_PERPENDICULAR )
         
         QP.AddToLayout( vbox, self._import_queue_panel, CC.FLAGS_EXPAND_PERPENDICULAR )
@@ -1792,7 +2024,7 @@ class ManagementPanelImporterMultipleGallery( ManagementPanelImporter ):
             
             self._highlighted_gallery_import = None
             
-            self._multiple_gallery_import.SetHighlightedGalleryImport( self._highlighted_gallery_import )
+            self._multiple_gallery_import.ClearHighlightedGalleryImport()
             
             self._gallery_importers_listctrl_panel.UpdateButtons()
             
@@ -1811,7 +2043,11 @@ class ManagementPanelImporterMultipleGallery( ManagementPanelImporter ):
         
         media_results = []
         
-        panel = ClientGUIResults.MediaPanelThumbnails( self._page, self._page_key, CC.LOCAL_FILE_SERVICE_KEY, media_results )
+        location_context = ClientLocation.GetLocationContextForAllLocalMedia()
+        
+        self._SetLocationContext( location_context )
+        
+        panel = ClientGUIResults.MediaPanelThumbnails( self._page, self._page_key, location_context, media_results )
         
         panel.SetEmptyPageStatusOverride( 'no highlighted query' )
         
@@ -1920,9 +2156,9 @@ class ManagementPanelImporterMultipleGallery( ManagementPanelImporter ):
     
     def _GetListCtrlMenu( self ):
         
-        selected_watchers = self._gallery_importers_listctrl.GetData( only_selected = True )
+        selected_importers = self._gallery_importers_listctrl.GetData( only_selected = True )
         
-        if len( selected_watchers ) == 0:
+        if len( selected_importers ) == 0:
             
             raise HydrusExceptions.DataMissing()
             
@@ -1933,15 +2169,21 @@ class ManagementPanelImporterMultipleGallery( ManagementPanelImporter ):
         
         ClientGUIMenus.AppendSeparator( menu )
         
-        ClientGUIMenus.AppendMenuItem( menu, 'show all importers\' presented files', 'Gather the presented files for the selected importers and show them in a new page.', self._ShowSelectedImportersFiles, show='presented' )
-        ClientGUIMenus.AppendMenuItem( menu, 'show all importers\' new files', 'Gather the presented files for the selected importers and show them in a new page.', self._ShowSelectedImportersFiles, show='new' )
-        ClientGUIMenus.AppendMenuItem( menu, 'show all importers\' files', 'Gather the presented files for the selected importers and show them in a new page.', self._ShowSelectedImportersFiles, show='all' )
-        ClientGUIMenus.AppendMenuItem( menu, 'show all importers\' files (including trash)', 'Gather the presented files (including trash) for the selected importers and show them in a new page.', self._ShowSelectedImportersFiles, show='all_and_trash' )
+        single_selected_presentation_import_options = None
+        
+        if len( selected_importers ) == 1:
+            
+            ( importer, ) = selected_importers
+            
+            single_selected_presentation_import_options = importer.GetFileImportOptions().GetPresentationImportOptions()
+            
+        
+        AddPresentationSubmenu( menu, 'downloader', single_selected_presentation_import_options, self._ShowSelectedImportersFiles )
         
         ClientGUIMenus.AppendSeparator( menu )
         
-        ClientGUIMenus.AppendMenuItem( menu, 'show file import status', 'Show the file import status windows for the selected query.', self._ShowSelectedImportersFileSeedCaches )
-        ClientGUIMenus.AppendMenuItem( menu, 'show gallery log', 'Show the gallery log windows for the selected query.', self._ShowSelectedImportersGallerySeedLogs )
+        ClientGUIMenus.AppendMenuItem( menu, 'show file log', 'Show the file log windows for the selected query.', self._ShowSelectedImportersFileSeedCaches )
+        ClientGUIMenus.AppendMenuItem( menu, 'show search log', 'Show the search log windows for the selected query.', self._ShowSelectedImportersGallerySeedLogs )
         
         if self._CanRetryFailed() or self._CanRetryIgnored():
             
@@ -1990,8 +2232,6 @@ class ManagementPanelImporterMultipleGallery( ManagementPanelImporter ):
             
             if len( hashes ) > 0:
                 
-                hashes = HG.client_controller.Read( 'filter_hashes', CC.LOCAL_FILE_SERVICE_KEY, hashes )
-                
                 media_results = HG.client_controller.Read( 'media_results', hashes )
                 
             else:
@@ -2004,7 +2244,11 @@ class ManagementPanelImporterMultipleGallery( ManagementPanelImporter ):
             
             sorted_media_results = [ hashes_to_media_results[ hash ] for hash in hashes ]
             
-            panel = ClientGUIResults.MediaPanelThumbnails( self._page, self._page_key, CC.LOCAL_FILE_SERVICE_KEY, sorted_media_results )
+            location_context = self._highlighted_gallery_import.GetFileImportOptions().GetDestinationLocationContext()
+            
+            self._SetLocationContext( location_context )
+            
+            panel = ClientGUIResults.MediaPanelThumbnails( self._page, self._page_key, location_context, sorted_media_results )
             
             panel.SetEmptyPageStatusOverride( 'no files for this query and its publishing settings' )
             
@@ -2132,9 +2376,18 @@ class ManagementPanelImporterMultipleGallery( ManagementPanelImporter ):
     
     def _RetryIgnored( self ):
         
+        try:
+            
+            ignored_regex = ClientGUIFileSeedCache.GetRetryIgnoredParam( self )
+            
+        except HydrusExceptions.CancelledException:
+            
+            return
+            
+        
         for gallery_import in self._gallery_importers_listctrl.GetData( only_selected = True ):
             
-            gallery_import.RetryIgnored()
+            gallery_import.RetryIgnored( ignored_regex = ignored_regex )
             
         
     
@@ -2211,17 +2464,17 @@ class ManagementPanelImporterMultipleGallery( ManagementPanelImporter ):
         
         file_seed_cache = gallery_import.GetFileSeedCache()
         
-        with ClientGUITopLevelWindowsPanels.DialogNullipotent( self, 'file import status' ) as dlg:
-            
-            panel = ClientGUIFileSeedCache.EditFileSeedCachePanel( dlg, HG.client_controller, file_seed_cache )
-            
-            dlg.SetPanel( panel )
-            
-            dlg.exec()
-            
+        title = 'file log'
+        frame_key = 'file_import_status'
+        
+        frame = ClientGUITopLevelWindowsPanels.FrameThatTakesScrollablePanel( self, title, frame_key )
+        
+        panel = ClientGUIFileSeedCache.EditFileSeedCachePanel( frame, HG.client_controller, file_seed_cache )
+        
+        frame.SetPanel( panel )
         
     
-    def _ShowSelectedImportersFiles( self, show = 'presented' ):
+    def _ShowSelectedImportersFiles( self, presentation_import_options = None ):
         
         gallery_imports = self._gallery_importers_listctrl.GetData( only_selected = True )
         
@@ -2235,18 +2488,7 @@ class ManagementPanelImporterMultipleGallery( ManagementPanelImporter ):
         
         for gallery_import in gallery_imports:
             
-            if show == 'presented':
-                
-                gallery_hashes = gallery_import.GetPresentedHashes()
-                
-            elif show == 'new':
-                
-                gallery_hashes = gallery_import.GetNewHashes()
-                
-            elif show in ( 'all', 'all_and_trash' ):
-                
-                gallery_hashes = gallery_import.GetHashes()
-                
+            gallery_hashes = gallery_import.GetPresentedHashes( presentation_import_options = presentation_import_options )
             
             new_hashes = [ hash for hash in gallery_hashes if hash not in seen_hashes ]
             
@@ -2254,24 +2496,17 @@ class ManagementPanelImporterMultipleGallery( ManagementPanelImporter ):
             seen_hashes.update( new_hashes )
             
         
-        if show == 'all_and_trash':
-            
-            filter_file_service_key = CC.COMBINED_LOCAL_FILE_SERVICE_KEY
-            
-        else:
-            
-            filter_file_service_key = CC.LOCAL_FILE_SERVICE_KEY
-            
-        
-        hashes = HG.client_controller.Read( 'filter_hashes', filter_file_service_key, hashes )
-        
         if len( hashes ) > 0:
             
             self._ClearExistingHighlightAndPanel()
             
             media_results = self._controller.Read( 'media_results', hashes, sorted = True )
             
-            panel = ClientGUIResults.MediaPanelThumbnails( self._page, self._page_key, CC.LOCAL_FILE_SERVICE_KEY, media_results )
+            location_context = ClientLocation.GetLocationContextForAllLocalMedia()
+            
+            self._SetLocationContext( location_context )
+            
+            panel = ClientGUIResults.MediaPanelThumbnails( self._page, self._page_key, location_context, media_results )
             
             self._page.SwapMediaPanel( panel )
             
@@ -2294,17 +2529,17 @@ class ManagementPanelImporterMultipleGallery( ManagementPanelImporter ):
         
         gallery_seed_log = gallery_import.GetGallerySeedLog()
         
-        with ClientGUITopLevelWindowsPanels.DialogNullipotent( self, 'gallery import log' ) as dlg:
-            
-            read_only = False
-            can_generate_more_pages = True
-            
-            panel = ClientGUIGallerySeedLog.EditGallerySeedLogPanel( dlg, HG.client_controller, read_only, can_generate_more_pages, gallery_seed_log )
-            
-            dlg.SetPanel( panel )
-            
-            dlg.exec()
-            
+        title = 'search log'
+        frame_key = 'gallery_import_log'
+        
+        read_only = False
+        can_generate_more_pages = True
+        
+        frame = ClientGUITopLevelWindowsPanels.FrameThatTakesScrollablePanel( self, title, frame_key )
+        
+        panel = ClientGUIGallerySeedLog.EditGallerySeedLogPanel( frame, HG.client_controller, read_only, can_generate_more_pages, gallery_seed_log )
+        
+        frame.SetPanel( panel )
         
     
     def _UpdateImportStatus( self ):
@@ -2403,7 +2638,7 @@ class ManagementPanelImporterMultipleGallery( ManagementPanelImporter ):
     
     def SetSearchFocus( self ):
         
-        HG.client_controller.CallAfterQtSafe( self._query_input, self._query_input.setFocus, QC.Qt.OtherFocusReason )
+        ClientGUIFunctions.SetFocusLater( self._query_input )
         
     
     def Start( self ):
@@ -2469,7 +2704,7 @@ class ManagementPanelImporterMultipleWatcher( ManagementPanelImporter ):
         self._file_import_options = ClientGUIImport.FileImportOptionsButton( self._watchers_panel, file_import_options, show_downloader_options, self._OptionsUpdated )
         self._tag_import_options = ClientGUIImport.TagImportOptionsButton( self._watchers_panel, tag_import_options, show_downloader_options, update_callable = self._OptionsUpdated, allow_default_selection = True )
         
-        # suck up watchers from elsewhere in the program (presents a checklistboxdialog)
+        # suck up watchers from elsewhere in the program (presents a checkboxlistdialog)
         
         #
         
@@ -2602,7 +2837,7 @@ class ManagementPanelImporterMultipleWatcher( ManagementPanelImporter ):
             
             self._highlighted_watcher = None
             
-            self._multiple_watcher_import.SetHighlightedWatcher( self._highlighted_watcher )
+            self._multiple_watcher_import.ClearHighlightedWatcher()
             
             self._watchers_listctrl_panel.UpdateButtons()
             
@@ -2619,9 +2854,13 @@ class ManagementPanelImporterMultipleWatcher( ManagementPanelImporter ):
         
         self._ClearExistingHighlight()
         
+        location_context = ClientLocation.GetLocationContextForAllLocalMedia()
+        
         media_results = []
         
-        panel = ClientGUIResults.MediaPanelThumbnails( self._page, self._page_key, CC.LOCAL_FILE_SERVICE_KEY, media_results )
+        self._SetLocationContext( location_context )
+        
+        panel = ClientGUIResults.MediaPanelThumbnails( self._page, self._page_key, location_context, media_results )
         
         panel.SetEmptyPageStatusOverride( 'no highlighted watcher' )
         
@@ -2630,7 +2869,7 @@ class ManagementPanelImporterMultipleWatcher( ManagementPanelImporter ):
         self._watchers_listctrl.UpdateDatas()
         
     
-    def _ConvertDataToListCtrlTuples( self, watcher ):
+    def _ConvertDataToListCtrlTuples( self, watcher: ClientImportWatchers.WatcherImport ):
         
         subject = watcher.GetSubject()
         
@@ -2688,19 +2927,42 @@ class ManagementPanelImporterMultipleWatcher( ManagementPanelImporter ):
         
         ( status_enum, pretty_watcher_status ) = self._multiple_watcher_import.GetWatcherSimpleStatus( watcher )
         
-        next_check_time = watcher.GetNextCheckTime()
+        checking_status = watcher.GetCheckingStatus()
         
-        if next_check_time is None:
+        if checking_status == ClientImporting.CHECKER_STATUS_OK:
             
-            next_check_time = 0
+            next_check_time = watcher.GetNextCheckTime()
             
-        
-        sort_watcher_status = ( ClientImporting.downloader_enum_sort_lookup[ status_enum ], next_check_time )
+            if next_check_time is None:
+                
+                next_check_time = 0
+                
+            
+            sort_watcher_status = ( ClientImporting.downloader_enum_sort_lookup[ status_enum ], next_check_time )
+            
+        else:
+            
+            # this lets 404 and DEAD sort different
+            
+            sort_watcher_status = ( ClientImporting.downloader_enum_sort_lookup[ status_enum ], checking_status )
+            
         
         display_tuple = ( pretty_subject, pretty_files_paused, pretty_checking_paused, pretty_watcher_status, pretty_progress, pretty_added )
         sort_tuple = ( subject, files_paused, sort_checking_paused, sort_watcher_status, progress, added )
         
         return ( display_tuple, sort_tuple )
+        
+    
+    def _CopySelectedSubjects( self ):
+        
+        watchers = self._watchers_listctrl.GetData( only_selected = True )
+        
+        if len( watchers ) > 0:
+            
+            text = os.linesep.join( ( watcher.GetSubject() for watcher in watchers ) )
+            
+            HG.client_controller.pub( 'clipboard', 'text', text )
+            
         
     
     def _CopySelectedURLs( self ):
@@ -2730,21 +2992,31 @@ class ManagementPanelImporterMultipleWatcher( ManagementPanelImporter ):
             
         
         menu = QW.QMenu()
-
+        
         ClientGUIMenus.AppendMenuItem( menu, 'copy urls', 'Copy all the selected watchers\' urls to clipboard.', self._CopySelectedURLs )
         ClientGUIMenus.AppendMenuItem( menu, 'open urls', 'Open all the selected watchers\' urls in your browser.', self._OpenSelectedURLs )
         
         ClientGUIMenus.AppendSeparator( menu )
-
-        ClientGUIMenus.AppendMenuItem( menu, 'show all watchers\' presented files', 'Gather the presented files for the selected watchers and show them in a new page.', self._ShowSelectedImportersFiles, show='presented' )
-        ClientGUIMenus.AppendMenuItem( menu, 'show all watchers\' new files', 'Gather the presented files for the selected watchers and show them in a new page.', self._ShowSelectedImportersFiles, show='new' )
-        ClientGUIMenus.AppendMenuItem( menu, 'show all watchers\' files', 'Gather the presented files for the selected watchers and show them in a new page.', self._ShowSelectedImportersFiles, show='all' )
-        ClientGUIMenus.AppendMenuItem( menu, 'show all watchers\' files (including trash)', 'Gather the presented files (including trash) for the selected watchers and show them in a new page.', self._ShowSelectedImportersFiles, show='all_and_trash' )
+        
+        ClientGUIMenus.AppendMenuItem( menu, 'copy subjects', 'Copy all the selected watchers\' subjects to clipboard.', self._CopySelectedSubjects )
         
         ClientGUIMenus.AppendSeparator( menu )
         
-        ClientGUIMenus.AppendMenuItem( menu, 'show file import status', 'Show the file import status windows for the selected watcher.', self._ShowSelectedImportersFileSeedCaches )
-        ClientGUIMenus.AppendMenuItem( menu, 'show checker log', 'Show the checker log windows for the selected watcher.', self._ShowSelectedImportersGallerySeedLogs )
+        single_selected_presentation_import_options = None
+        
+        if len( selected_watchers ) == 1:
+            
+            ( watcher, ) = selected_watchers
+            
+            single_selected_presentation_import_options = watcher.GetFileImportOptions().GetPresentationImportOptions()
+            
+        
+        AddPresentationSubmenu( menu, 'watcher', single_selected_presentation_import_options, self._ShowSelectedImportersFiles )
+        
+        ClientGUIMenus.AppendSeparator( menu )
+        
+        ClientGUIMenus.AppendMenuItem( menu, 'show file log', 'Show the file log windows for the selected watcher.', self._ShowSelectedImportersFileSeedCaches )
+        ClientGUIMenus.AppendMenuItem( menu, 'show check log', 'Show the checker log windows for the selected watcher.', self._ShowSelectedImportersGallerySeedLogs )
         
         if self._CanRetryFailed() or self._CanRetryIgnored():
             
@@ -2789,8 +3061,6 @@ class ManagementPanelImporterMultipleWatcher( ManagementPanelImporter ):
             
             if len( hashes ) > 0:
                 
-                hashes = HG.client_controller.Read( 'filter_hashes', CC.LOCAL_FILE_SERVICE_KEY, hashes )
-                
                 media_results = HG.client_controller.Read( 'media_results', hashes )
                 
             else:
@@ -2803,7 +3073,11 @@ class ManagementPanelImporterMultipleWatcher( ManagementPanelImporter ):
             
             sorted_media_results = [ hashes_to_media_results[ hash ] for hash in hashes ]
             
-            panel = ClientGUIResults.MediaPanelThumbnails( self._page, self._page_key, CC.LOCAL_FILE_SERVICE_KEY, sorted_media_results )
+            location_context = self._highlighted_watcher.GetFileImportOptions().GetDestinationLocationContext()
+            
+            self._SetLocationContext( location_context )
+            
+            panel = ClientGUIResults.MediaPanelThumbnails( self._page, self._page_key, location_context, sorted_media_results )
             
             panel.SetEmptyPageStatusOverride( 'no files for this watcher and its publishing settings' )
             
@@ -2963,9 +3237,18 @@ class ManagementPanelImporterMultipleWatcher( ManagementPanelImporter ):
     
     def _RetryIgnored( self ):
         
+        try:
+            
+            ignored_regex = ClientGUIFileSeedCache.GetRetryIgnoredParam( self )
+            
+        except HydrusExceptions.CancelledException:
+            
+            return
+            
+        
         for watcher in self._watchers_listctrl.GetData( only_selected = True ):
             
-            watcher.RetryIgnored()
+            watcher.RetryIgnored( ignored_regex = ignored_regex )
             
         
     
@@ -3010,17 +3293,17 @@ class ManagementPanelImporterMultipleWatcher( ManagementPanelImporter ):
         
         file_seed_cache = watcher.GetFileSeedCache()
         
-        with ClientGUITopLevelWindowsPanels.DialogNullipotent( self, 'file import status' ) as dlg:
-            
-            panel = ClientGUIFileSeedCache.EditFileSeedCachePanel( dlg, HG.client_controller, file_seed_cache )
-            
-            dlg.SetPanel( panel )
-            
-            dlg.exec()
-            
+        title = 'file log'
+        frame_key = 'file_import_status'
+        
+        frame = ClientGUITopLevelWindowsPanels.FrameThatTakesScrollablePanel( self, title, frame_key )
+        
+        panel = ClientGUIFileSeedCache.EditFileSeedCachePanel( frame, HG.client_controller, file_seed_cache )
+        
+        frame.SetPanel( panel )
         
     
-    def _ShowSelectedImportersFiles( self, show = 'presented' ):
+    def _ShowSelectedImportersFiles( self, presentation_import_options = None ):
         
         watchers = self._watchers_listctrl.GetData( only_selected = True )
         
@@ -3034,18 +3317,7 @@ class ManagementPanelImporterMultipleWatcher( ManagementPanelImporter ):
         
         for watcher in watchers:
             
-            if show == 'presented':
-                
-                watcher_hashes = watcher.GetPresentedHashes()
-                
-            elif show == 'new':
-                
-                watcher_hashes = watcher.GetNewHashes()
-                
-            elif show in ( 'all', 'all_and_trash' ):
-                
-                watcher_hashes = watcher.GetHashes()
-                
+            watcher_hashes = watcher.GetPresentedHashes( presentation_import_options = presentation_import_options )
             
             new_hashes = [ hash for hash in watcher_hashes if hash not in seen_hashes ]
             
@@ -3053,24 +3325,17 @@ class ManagementPanelImporterMultipleWatcher( ManagementPanelImporter ):
             seen_hashes.update( new_hashes )
             
         
-        if show == 'all_and_trash':
-            
-            filter_file_service_key = CC.COMBINED_LOCAL_FILE_SERVICE_KEY
-            
-        else:
-            
-            filter_file_service_key = CC.LOCAL_FILE_SERVICE_KEY
-            
-        
-        hashes = HG.client_controller.Read( 'filter_hashes', filter_file_service_key, hashes )
-        
         if len( hashes ) > 0:
             
             self._ClearExistingHighlightAndPanel()
             
             media_results = self._controller.Read( 'media_results', hashes, sorted = True )
             
-            panel = ClientGUIResults.MediaPanelThumbnails( self._page, self._page_key, CC.LOCAL_FILE_SERVICE_KEY, media_results )
+            location_context = ClientLocation.GetLocationContextForAllLocalMedia()
+            
+            self._SetLocationContext( location_context )
+            
+            panel = ClientGUIResults.MediaPanelThumbnails( self._page, self._page_key, location_context, media_results )
             
             self._page.SwapMediaPanel( panel )
             
@@ -3093,17 +3358,17 @@ class ManagementPanelImporterMultipleWatcher( ManagementPanelImporter ):
         
         gallery_seed_log = watcher.GetGallerySeedLog()
         
-        with ClientGUITopLevelWindowsPanels.DialogNullipotent( self, 'checker log' ) as dlg:
-            
-            read_only = True
-            can_generate_more_pages = False
-            
-            panel = ClientGUIGallerySeedLog.EditGallerySeedLogPanel( dlg, HG.client_controller, read_only, can_generate_more_pages, gallery_seed_log )
-            
-            dlg.SetPanel( panel )
-            
-            dlg.exec()
-            
+        title = 'check log'
+        frame_key = 'gallery_import_log'
+        
+        read_only = True
+        can_generate_more_pages = False
+        
+        frame = ClientGUITopLevelWindowsPanels.FrameThatTakesScrollablePanel( self, title, frame_key )
+        
+        panel = ClientGUIGallerySeedLog.EditGallerySeedLogPanel( frame, HG.client_controller, read_only, can_generate_more_pages, gallery_seed_log )
+        
+        frame.SetPanel( panel )
         
     
     def _UpdateImportStatus( self ):
@@ -3222,7 +3487,7 @@ class ManagementPanelImporterMultipleWatcher( ManagementPanelImporter ):
     
     def SetSearchFocus( self ):
         
-        HG.client_controller.CallAfterQtSafe( self._watcher_url_input, self._watcher_url_input.setFocus, QC.Qt.OtherFocusReason )
+        ClientGUIFunctions.SetFocusLater( self._watcher_url_input )
         
     
     def Start( self ):
@@ -3259,14 +3524,14 @@ class ManagementPanelImporterSimpleDownloader( ManagementPanelImporter ):
         
         #
         
-        self._simple_parsing_jobs_panel = ClientGUICommon.StaticBox( self._simple_downloader_panel, 'simple parsing urls' )
+        self._simple_parsing_jobs_panel = ClientGUICommon.StaticBox( self._simple_downloader_panel, 'parsing' )
         
         self._pause_queue_button = ClientGUICommon.BetterBitmapButton( self._simple_parsing_jobs_panel, CC.global_pixmaps().gallery_pause, self.PauseQueue )
         self._pause_queue_button.setToolTip( 'pause/play queue' )
         
         self._parser_status = ClientGUICommon.BetterStaticText( self._simple_parsing_jobs_panel, ellipsize_end = True )
         
-        self._gallery_seed_log_control = ClientGUIGallerySeedLog.GallerySeedLogStatusControl( self._simple_parsing_jobs_panel, self._controller, True, False, self._page_key )
+        self._gallery_seed_log_control = ClientGUIGallerySeedLog.GallerySeedLogStatusControl( self._simple_parsing_jobs_panel, self._controller, True, False, 'parsing', self._page_key )
         
         self._page_download_control = ClientGUINetworkJobControl.NetworkJobControl( self._simple_parsing_jobs_panel )
         
@@ -3314,7 +3579,7 @@ class ManagementPanelImporterSimpleDownloader( ManagementPanelImporter ):
         QP.AddToLayout( hbox, self._current_action, CC.FLAGS_CENTER_PERPENDICULAR_EXPAND_DEPTH )
         QP.AddToLayout( hbox, self._pause_files_button, CC.FLAGS_CENTER_PERPENDICULAR )
         
-        self._import_queue_panel.Add( hbox, CC.FLAGS_EXPAND_PERPENDICULAR )
+        self._import_queue_panel.Add( hbox, CC.FLAGS_EXPAND_SIZER_PERPENDICULAR )
         self._import_queue_panel.Add( self._file_seed_cache_control, CC.FLAGS_EXPAND_PERPENDICULAR )
         self._import_queue_panel.Add( self._file_download_control, CC.FLAGS_EXPAND_PERPENDICULAR )
         
@@ -3339,7 +3604,7 @@ class ManagementPanelImporterSimpleDownloader( ManagementPanelImporter ):
         QP.AddToLayout( hbox, self._parser_status, CC.FLAGS_CENTER_PERPENDICULAR_EXPAND_DEPTH )
         QP.AddToLayout( hbox, self._pause_queue_button, CC.FLAGS_CENTER_PERPENDICULAR )
         
-        self._simple_parsing_jobs_panel.Add( hbox, CC.FLAGS_EXPAND_PERPENDICULAR )
+        self._simple_parsing_jobs_panel.Add( hbox, CC.FLAGS_EXPAND_SIZER_PERPENDICULAR )
         self._simple_parsing_jobs_panel.Add( self._gallery_seed_log_control, CC.FLAGS_EXPAND_PERPENDICULAR )
         self._simple_parsing_jobs_panel.Add( self._page_download_control, CC.FLAGS_EXPAND_PERPENDICULAR )
         self._simple_parsing_jobs_panel.Add( queue_hbox, CC.FLAGS_EXPAND_SIZER_BOTH_WAYS )
@@ -3582,9 +3847,23 @@ class ManagementPanelImporterSimpleDownloader( ManagementPanelImporter ):
         
         ( file_network_job, page_network_job ) = self._simple_downloader_import.GetNetworkJobs()
         
-        self._file_download_control.SetNetworkJob( file_network_job )
+        if file_network_job is None:
+            
+            self._file_download_control.ClearNetworkJob()
+            
+        else:
+            
+            self._file_download_control.SetNetworkJob( file_network_job )
+            
         
-        self._page_download_control.SetNetworkJob( page_network_job )
+        if page_network_job is None:
+            
+            self._page_download_control.ClearNetworkJob()
+            
+        else:
+            
+            self._page_download_control.SetNetworkJob( page_network_job )
+            
         
     
     def CheckAbleToClose( self ):
@@ -3677,7 +3956,7 @@ class ManagementPanelImporterSimpleDownloader( ManagementPanelImporter ):
     
     def SetSearchFocus( self ):
         
-        HG.client_controller.CallAfterQtSafe( self._page_url_input, self._page_url_input.setFocus, QC.Qt.OtherFocusReason )
+        ClientGUIFunctions.SetFocusLater( self._page_url_input )
         
     
     def Start( self ):
@@ -3697,18 +3976,28 @@ class ManagementPanelImporterURLs( ManagementPanelImporter ):
         
         self._url_panel = ClientGUICommon.StaticBox( self, 'url downloader' )
         
-        self._pause_button = ClientGUICommon.BetterBitmapButton( self._url_panel, CC.global_pixmaps().file_pause, self.Pause )
+        #
+        
+        self._import_queue_panel = ClientGUICommon.StaticBox( self._url_panel, 'imports' )
+        
+        self._pause_button = ClientGUICommon.BetterBitmapButton( self._import_queue_panel, CC.global_pixmaps().file_pause, self.Pause )
         self._pause_button.setToolTip( 'pause/play files' )
         
-        self._file_download_control = ClientGUINetworkJobControl.NetworkJobControl( self._url_panel )
+        self._file_download_control = ClientGUINetworkJobControl.NetworkJobControl( self._import_queue_panel )
         
         self._urls_import = self._management_controller.GetVariable( 'urls_import' )
         
-        self._file_seed_cache_control = ClientGUIFileSeedCache.FileSeedCacheStatusControl( self._url_panel, self._controller, page_key = self._page_key )
+        self._file_seed_cache_control = ClientGUIFileSeedCache.FileSeedCacheStatusControl( self._import_queue_panel, self._controller, page_key = self._page_key )
         
-        self._gallery_download_control = ClientGUINetworkJobControl.NetworkJobControl( self._url_panel )
+        #
         
-        self._gallery_seed_log_control = ClientGUIGallerySeedLog.GallerySeedLogStatusControl( self._url_panel, self._controller, False, False, page_key = self._page_key )
+        self._gallery_panel = ClientGUICommon.StaticBox( self._url_panel, 'search' )
+        
+        self._gallery_download_control = ClientGUINetworkJobControl.NetworkJobControl( self._gallery_panel )
+        
+        self._gallery_seed_log_control = ClientGUIGallerySeedLog.GallerySeedLogStatusControl( self._gallery_panel, self._controller, False, False, 'search', page_key = self._page_key )
+        
+        #
         
         self._url_input = ClientGUIControls.TextAndPasteCtrl( self._url_panel, self._PendURLs )
         
@@ -3723,11 +4012,15 @@ class ManagementPanelImporterURLs( ManagementPanelImporter ):
         
         #
         
-        self._url_panel.Add( self._pause_button, CC.FLAGS_ON_RIGHT )
-        self._url_panel.Add( self._file_seed_cache_control, CC.FLAGS_EXPAND_PERPENDICULAR )
-        self._url_panel.Add( self._file_download_control, CC.FLAGS_EXPAND_PERPENDICULAR )
-        self._url_panel.Add( self._gallery_seed_log_control, CC.FLAGS_EXPAND_PERPENDICULAR )
-        self._url_panel.Add( self._gallery_download_control, CC.FLAGS_EXPAND_PERPENDICULAR )
+        self._import_queue_panel.Add( self._pause_button, CC.FLAGS_ON_RIGHT )
+        self._import_queue_panel.Add( self._file_seed_cache_control, CC.FLAGS_EXPAND_PERPENDICULAR )
+        self._import_queue_panel.Add( self._file_download_control, CC.FLAGS_EXPAND_PERPENDICULAR )
+        
+        self._gallery_panel.Add( self._gallery_seed_log_control, CC.FLAGS_EXPAND_PERPENDICULAR )
+        self._gallery_panel.Add( self._gallery_download_control, CC.FLAGS_EXPAND_PERPENDICULAR )
+        
+        self._url_panel.Add( self._import_queue_panel, CC.FLAGS_EXPAND_PERPENDICULAR )
+        self._url_panel.Add( self._gallery_panel, CC.FLAGS_EXPAND_PERPENDICULAR )
         self._url_panel.Add( self._url_input, CC.FLAGS_EXPAND_PERPENDICULAR )
         self._url_panel.Add( self._file_import_options, CC.FLAGS_EXPAND_PERPENDICULAR )
         self._url_panel.Add( self._tag_import_options, CC.FLAGS_EXPAND_PERPENDICULAR )
@@ -3791,9 +4084,23 @@ class ManagementPanelImporterURLs( ManagementPanelImporter ):
         
         ( file_network_job, gallery_network_job ) = self._urls_import.GetNetworkJobs()
         
-        self._file_download_control.SetNetworkJob( file_network_job )
+        if file_network_job is None:
+            
+            self._file_download_control.ClearNetworkJob()
+            
+        else:
+            
+            self._file_download_control.SetNetworkJob( file_network_job )
+            
         
-        self._gallery_download_control.SetNetworkJob( gallery_network_job )
+        if gallery_network_job is None:
+            
+            self._gallery_download_control.ClearNetworkJob()
+            
+        else:
+            
+            self._gallery_download_control.SetNetworkJob( gallery_network_job )
+            
         
     
     def CheckAbleToClose( self ):
@@ -3828,7 +4135,7 @@ class ManagementPanelImporterURLs( ManagementPanelImporter ):
     
     def SetSearchFocus( self ):
         
-        HG.client_controller.CallAfterQtSafe( self._url_input, self._url_input.setFocus, QC.Qt.OtherFocusReason )
+        ClientGUIFunctions.SetFocusLater( self._url_input )
         
     
     def Start( self ):
@@ -3926,8 +4233,7 @@ class ManagementPanelPetitions( ManagementPanel ):
         self._sort_by_left.setEnabled( False )
         self._sort_by_right.setEnabled( False )
         
-        self._contents = QP.CheckListBox( self._petition_panel )
-        self._contents.setSelectionMode( QW.QAbstractItemView.ExtendedSelection )
+        self._contents = ClientGUICommon.BetterCheckBoxList( self._petition_panel )
         self._contents.itemDoubleClicked.connect( self.EventContentDoubleClick )
         
         ( min_width, min_height ) = ClientGUIFunctions.ConvertTextToPixels( self._contents, ( 16, 20 ) )
@@ -3984,7 +4290,16 @@ class ManagementPanelPetitions( ManagementPanel ):
         QP.AddToLayout( vbox, self._petitions_info_panel, CC.FLAGS_EXPAND_PERPENDICULAR )
         QP.AddToLayout( vbox, self._petition_panel, CC.FLAGS_EXPAND_BOTH_WAYS )
         
-        self._MakeCurrentSelectionTagsBox( vbox )
+        if service_type == HC.TAG_REPOSITORY:
+            
+            tag_display_type = ClientTags.TAG_DISPLAY_STORAGE
+            
+        else:
+            
+            tag_display_type = ClientTags.TAG_DISPLAY_SELECTION_LIST
+            
+        
+        self._MakeCurrentSelectionTagsBox( vbox, tag_display_type = tag_display_type )
         
         self.widget().setLayout( vbox )
         
@@ -3997,7 +4312,7 @@ class ManagementPanelPetitions( ManagementPanel ):
         
         for i in range( self._contents.count() ):
             
-            self._contents.Check( i )
+            self._contents.Check( i, True )
             
         
     
@@ -4264,7 +4579,7 @@ class ManagementPanelPetitions( ManagementPanel ):
     
     def _FlipSelected( self ):
         
-        for i in self._contents.GetSelections():
+        for i in self._contents.GetSelectedIndices():
             
             flipped_state = not self._contents.IsChecked( i )
             
@@ -4278,7 +4593,7 @@ class ManagementPanelPetitions( ManagementPanel ):
         
         for i in range( self._contents.count() ):
             
-            content = QP.GetClientData( self._contents, i )
+            content = self._contents.GetData( i )
             check = self._contents.IsChecked( i )
             
             contents_and_checks.append( ( content, check ) )
@@ -4332,27 +4647,20 @@ class ManagementPanelPetitions( ManagementPanel ):
             
             content_string = content.ToString()
             
-            self._contents.Append( content_string, content )
+            self._contents.Append( content_string, content, starts_checked = check )
             
-            if check:
-                
-                to_check.append( i )
-                
-            
-        
-        self._contents.SetCheckedItems( to_check )
         
     
     def _ShowHashes( self, hashes ):
         
-        file_service_key = self._management_controller.GetKey( 'file_service' )
+        location_context = self._management_controller.GetVariable( 'location_context' )
         
         with QP.BusyCursor():
             
             media_results = self._controller.Read( 'media_results', hashes )
             
         
-        panel = ClientGUIResults.MediaPanelThumbnails( self._page, self._page_key, file_service_key, media_results )
+        panel = ClientGUIResults.MediaPanelThumbnails( self._page, self._page_key, location_context, media_results )
         
         panel.Collect( self._page_key, self._media_collect.GetValue() )
         
@@ -4370,13 +4678,13 @@ class ManagementPanelPetitions( ManagementPanel ):
     
     def EventContentDoubleClick( self, item ):
         
-        selections = self._contents.GetSelections()
+        selected_indices = self._contents.GetSelectedIndices()
         
-        if len( selections ) > 0:
+        if len( selected_indices ) > 0:
             
-            selection = selections[0]
+            selection = selected_indices[0]
             
-            content = QP.GetClientData( self._contents, selection )
+            content = self._contents.GetData( selection )
             
             if content.HasHashes():
                 
@@ -4525,7 +4833,7 @@ class ManagementPanelPetitions( ManagementPanel ):
         
         for index in range( self._contents.count() ):
             
-            content = QP.GetClientData( self._contents, index )
+            content = self._contents.GetData( index )
             
             if self._contents.IsChecked( index ):
                 
@@ -4561,13 +4869,13 @@ class ManagementPanelPetitions( ManagementPanel ):
     
     def EventRowRightClick( self ):
         
-        selected_indices = self._contents.GetSelections()
+        selected_indices = self._contents.GetSelectedIndices()
         
         selected_contents = []
         
         for i in selected_indices:
             
-            content = QP.GetClientData( self._contents, i )
+            content = self._contents.GetData( i )
             
             selected_contents.append( content )
             
@@ -4644,7 +4952,7 @@ class ManagementPanelQuery( ManagementPanel ):
         
         file_search_context = self._management_controller.GetVariable( 'file_search_context' )
         
-        file_search_context.FixMissingServices( HG.client_controller.services_manager )
+        file_search_context.FixMissingServices( HG.client_controller.services_manager.FilterValidServiceKeys )
         
         self._search_enabled = self._management_controller.GetVariable( 'search_enabled' )
         
@@ -4683,7 +4991,7 @@ class ManagementPanelQuery( ManagementPanel ):
             
             self._tag_autocomplete.searchChanged.connect( self.SearchChanged )
             
-            self._tag_autocomplete.fileServiceChanged.connect( self.SetFileServiceKey )
+            self._tag_autocomplete.locationChanged.connect( self.SetLocationContext )
             
         
     
@@ -4695,9 +5003,11 @@ class ManagementPanelQuery( ManagementPanel ):
             
             file_search_context = self._tag_autocomplete.GetFileSearchContext()
             
-            file_service_key = file_search_context.GetFileServiceKey()
+            location_context = file_search_context.GetLocationContext()
             
-            panel = ClientGUIResults.MediaPanelThumbnails( self._page, self._page_key, file_service_key, [] )
+            self._SetLocationContext( location_context )
+            
+            panel = ClientGUIResults.MediaPanelThumbnails( self._page, self._page_key, location_context, [] )
             
             panel.SetEmptyPageStatusOverride( 'search cancelled!' )
             
@@ -4714,30 +5024,33 @@ class ManagementPanelQuery( ManagementPanel ):
     
     def _MakeCurrentSelectionTagsBox( self, sizer ):
         
-        tags_box = ClientGUIListBoxes.StaticBoxSorterForListBoxTags( self, 'selection tags' )
+        self._current_selection_tags_box = ClientGUIListBoxes.StaticBoxSorterForListBoxTags( self, 'selection tags' )
         
         if self._search_enabled:
             
-            self._current_selection_tags_list = ListBoxTagsMediaManagementPanel( tags_box, self._management_controller, self._page_key, tag_autocomplete = self._tag_autocomplete )
-            
-            file_search_context = self._management_controller.GetVariable( 'file_search_context' )
-            
-            file_search_context.FixMissingServices( HG.client_controller.services_manager )
-            
-            tag_service_key = file_search_context.GetTagSearchContext().service_key
-            
-            self._current_selection_tags_list.SetTagServiceKey( tag_service_key )
-            
-            self._tag_autocomplete.tagServiceChanged.connect( self._current_selection_tags_list.SetTagServiceKey )
+            self._current_selection_tags_list = ListBoxTagsMediaManagementPanel( self._current_selection_tags_box, self._management_controller, self._page_key, tag_autocomplete = self._tag_autocomplete )
             
         else:
             
-            self._current_selection_tags_list = ListBoxTagsMediaManagementPanel( tags_box, self._management_controller, self._page_key )
+            self._current_selection_tags_list = ListBoxTagsMediaManagementPanel( self._current_selection_tags_box, self._management_controller, self._page_key )
             
         
-        tags_box.SetTagsBox( self._current_selection_tags_list )
+        self._current_selection_tags_box.SetTagsBox( self._current_selection_tags_list )
         
-        QP.AddToLayout( sizer, tags_box, CC.FLAGS_EXPAND_BOTH_WAYS )
+        if self._search_enabled:
+            
+            file_search_context = self._management_controller.GetVariable( 'file_search_context' )
+            
+            file_search_context.FixMissingServices( HG.client_controller.services_manager.FilterValidServiceKeys )
+            
+            tag_service_key = file_search_context.GetTagSearchContext().service_key
+            
+            self._current_selection_tags_box.SetTagServiceKey( tag_service_key )
+            
+            self._tag_autocomplete.tagServiceChanged.connect( self._current_selection_tags_box.SetTagServiceKey )
+            
+        
+        QP.AddToLayout( sizer, self._current_selection_tags_box, CC.FLAGS_EXPAND_BOTH_WAYS )
         
     
     def _RefreshQuery( self ):
@@ -4752,16 +5065,17 @@ class ManagementPanelQuery( ManagementPanel ):
             
             file_search_context = self._tag_autocomplete.GetFileSearchContext()
             
-            self._management_controller.SetVariable( 'file_search_context', file_search_context )
-            self._SetFileServiceKey( file_search_context.GetFileServiceKey() )
+            self._management_controller.SetVariable( 'file_search_context', file_search_context.Duplicate() )
+            
+            location_context = file_search_context.GetLocationContext()
+            
+            self._SetLocationContext( location_context )
             
             synchronised = self._tag_autocomplete.IsSynchronised()
             
             self._management_controller.SetVariable( 'synchronised', synchronised )
             
             if synchronised:
-                
-                file_service_key = file_search_context.GetFileServiceKey()
                 
                 if len( file_search_context.GetPredicates() ) > 0:
                     
@@ -4771,11 +5085,11 @@ class ManagementPanelQuery( ManagementPanel ):
                     
                     self._controller.CallToThread( self.THREADDoQuery, self._controller, self._page_key, self._query_job_key, file_search_context, sort_by )
                     
-                    panel = ClientGUIResults.MediaPanelLoading( self._page, self._page_key, file_service_key )
+                    panel = ClientGUIResults.MediaPanelLoading( self._page, self._page_key, location_context )
                     
                 else:
                     
-                    panel = ClientGUIResults.MediaPanelThumbnails( self._page, self._page_key, file_service_key, [] )
+                    panel = ClientGUIResults.MediaPanelThumbnails( self._page, self._page_key, location_context, [] )
                     
                     panel.SetEmptyPageStatusOverride( 'no search' )
                     
@@ -4821,9 +5135,9 @@ class ManagementPanelQuery( ManagementPanel ):
         media_panel.newMediaAdded.connect( self.PauseSearching )
         
     
-    def SetFileServiceKey( self, service_key: bytes ):
+    def SetLocationContext( self, location_context: ClientLocation.LocationContext ):
         
-        self._SetFileServiceKey( service_key )
+        self._SetLocationContext( location_context )
         
     
     def CleanBeforeClose( self ):
@@ -4904,7 +5218,7 @@ class ManagementPanelQuery( ManagementPanel ):
         
         if self._search_enabled:
             
-            HG.client_controller.CallAfterQtSafe( self._tag_autocomplete, self._tag_autocomplete.setFocus, QC.Qt.OtherFocusReason )
+            ClientGUIFunctions.SetFocusLater( self._tag_autocomplete )
             
         
     
@@ -4912,9 +5226,9 @@ class ManagementPanelQuery( ManagementPanel ):
         
         if query_job_key == self._query_job_key:
             
-            file_service_key = self._management_controller.GetKey( 'file_service' )
+            location_context = self._management_controller.GetVariable( 'location_context' )
             
-            panel = ClientGUIResults.MediaPanelThumbnails( self._page, self._page_key, file_service_key, media_results )
+            panel = ClientGUIResults.MediaPanelThumbnails( self._page, self._page_key, location_context, media_results )
             
             panel.SetEmptyPageStatusOverride( 'no files found for this search' )
             
@@ -4930,7 +5244,7 @@ class ManagementPanelQuery( ManagementPanel ):
         
         file_search_context = self._management_controller.GetVariable( 'file_search_context' )
         
-        file_search_context.FixMissingServices( HG.client_controller.services_manager )
+        file_search_context.FixMissingServices( HG.client_controller.services_manager.FilterValidServiceKeys )
         
         initial_predicates = file_search_context.GetPredicates()
         
@@ -4940,7 +5254,7 @@ class ManagementPanelQuery( ManagementPanel ):
             
         
     
-    def THREADDoQuery( self, controller, page_key, query_job_key, search_context, sort_by ):
+    def THREADDoQuery( self, controller, page_key, query_job_key, file_search_context: ClientSearch.FileSearchContext, sort_by ):
         
         def qt_code():
             
@@ -4958,7 +5272,7 @@ class ManagementPanelQuery( ManagementPanel ):
         
         HG.client_controller.file_viewing_stats_manager.Flush()
         
-        query_hash_ids = controller.Read( 'file_query_ids', search_context, job_key = query_job_key, limit_sort_by = sort_by )
+        query_hash_ids = controller.Read( 'file_query_ids', file_search_context, job_key = query_job_key, limit_sort_by = sort_by )
         
         if query_job_key.IsCancelled():
             
@@ -4983,7 +5297,9 @@ class ManagementPanelQuery( ManagementPanel ):
             controller.WaitUntilViewFree()
             
         
-        search_context.SetComplete()
+        file_search_context.SetComplete()
+        
+        self._management_controller.SetVariable( 'file_search_context', file_search_context.Duplicate() )
         
         QP.CallAfter( qt_code )
         

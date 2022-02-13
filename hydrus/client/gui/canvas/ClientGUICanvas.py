@@ -1,4 +1,3 @@
-import collections
 import typing
 
 from qtpy import QtCore as QC
@@ -17,6 +16,7 @@ from hydrus.client import ClientApplicationCommand as CAC
 from hydrus.client import ClientConstants as CC
 from hydrus.client import ClientData
 from hydrus.client import ClientDuplicates
+from hydrus.client import ClientLocation
 from hydrus.client import ClientPaths
 from hydrus.client import ClientSearch
 from hydrus.client.gui import ClientGUICore as CGC
@@ -64,7 +64,7 @@ def AddAudioVolumeMenu( menu, canvas_type ):
     mute_volume_type = None
     volume_volume_type = ClientGUIMediaControls.AUDIO_GLOBAL
     
-    if canvas_type == ClientGUICommon.CANVAS_MEDIA_VIEWER:
+    if canvas_type == CC.CANVAS_MEDIA_VIEWER:
         
         mute_volume_type = ClientGUIMediaControls.AUDIO_MEDIA_VIEWER
         
@@ -73,7 +73,7 @@ def AddAudioVolumeMenu( menu, canvas_type ):
             volume_volume_type = ClientGUIMediaControls.AUDIO_MEDIA_VIEWER
             
         
-    elif canvas_type == ClientGUICommon.CANVAS_PREVIEW:
+    elif canvas_type == CC.CANVAS_PREVIEW:
         
         mute_volume_type = ClientGUIMediaControls.AUDIO_PREVIEW
         
@@ -160,7 +160,7 @@ def CalculateCanvasMediaSize( media, canvas_size: QC.QSize, show_action ):
     if ClientGUICanvasMedia.ShouldHaveAnimationBar( media, show_action ):
         
         animated_scanbar_height = HG.client_controller.new_options.GetInteger( 'animated_scanbar_height' )
-        
+        animated_scanbar_height = 0
         canvas_height -= animated_scanbar_height
         
     
@@ -300,7 +300,10 @@ def CalculateMediaContainerSize( media, zoom, show_action ):
         
         if media.GetMime() in HC.MIMES_WITH_THUMBNAILS:
             
-            ( thumb_width, thumb_height ) = HydrusImageHandling.GetThumbnailResolution( media.GetResolution(), HG.client_controller.options[ 'thumbnail_dimensions' ] )
+            bounding_dimensions = HG.client_controller.options[ 'thumbnail_dimensions' ]
+            thumbnail_scale_type = HG.client_controller.new_options.GetInteger( 'thumbnail_scale_type' )
+            
+            ( clip_rect, ( thumb_width, thumb_height ) ) = HydrusImageHandling.GetThumbnailResolutionAndClipRegion( media.GetResolution(), bounding_dimensions, thumbnail_scale_type )
             
             height = height + thumb_height
             
@@ -314,7 +317,7 @@ def CalculateMediaContainerSize( media, zoom, show_action ):
         if ClientGUICanvasMedia.ShouldHaveAnimationBar( media, show_action ):
             
             animated_scanbar_height = HG.client_controller.new_options.GetInteger( 'animated_scanbar_height' )
-            
+            animated_scanbar_height = 0
             media_height += animated_scanbar_height
             
         
@@ -343,14 +346,15 @@ def CalculateMediaSize( media, zoom ):
 class Canvas( QW.QWidget ):
     
     PREVIEW_WINDOW = False
+    CANVAS_TYPE = CC.CANVAS_MEDIA_VIEWER
     
-    def __init__( self, parent, file_service_key ):
+    def __init__( self, parent, location_context: ClientLocation.LocationContext ):
         
         QW.QWidget.__init__( self, parent )
         
         self.setSizePolicy( QW.QSizePolicy.Expanding, QW.QSizePolicy.Expanding )
         
-        self._file_service_key = file_service_key
+        self._location_context = location_context
         
         self._current_media_start_time = HydrusData.GetNow()
         
@@ -364,15 +368,6 @@ class Canvas( QW.QWidget ):
         
         self._current_media = None
         
-        if self.PREVIEW_WINDOW:
-            
-            self._canvas_type = ClientGUICommon.CANVAS_PREVIEW
-            
-        else:
-            
-            self._canvas_type = ClientGUICommon.CANVAS_MEDIA_VIEWER
-            
-        
         catch_mouse = True
         
         # once we have catch_mouse full shortcut support for canvases, swap out this out for an option to swallow activating clicks
@@ -384,7 +379,7 @@ class Canvas( QW.QWidget ):
         
         self.installEventFilter( self._click_drag_reporting_filter )
         
-        self._media_container = ClientGUICanvasMedia.MediaContainer( self, self._canvas_type, self._click_drag_reporting_filter )
+        self._media_container = ClientGUICanvasMedia.MediaContainer( self, self.CANVAS_TYPE, self._click_drag_reporting_filter )
         
         self._current_zoom = 1.0
         self._canvas_zoom = 1.0
@@ -724,17 +719,69 @@ class Canvas( QW.QWidget ):
             
             # set up canvas zoom
             
+            previous_current_zoom = self._current_zoom
+            
+            ( media_show_action, media_start_paused, media_start_with_embed ) = self._GetShowAction( previous_media )
+            
+            ( previous_default_zoom, previous_canvas_zoom ) = CalculateCanvasZooms( self, previous_media, media_show_action )
+            
             ( media_show_action, media_start_paused, media_start_with_embed ) = self._GetShowAction( self._current_media )
             
             ( gumpf_current_zoom, self._canvas_zoom ) = CalculateCanvasZooms( self, self._current_media, media_show_action )
             
-            # for init zoom, we want the _width_ to stay the same as previous
+            # previously, we always matched width, but this causes a problem in dupe viewer when B has a little watermark on the bottom, spilling below bottom of screen
+            # I think in future we will have more options regarding all this, and this method will change significantly
+            # however for now we really just want a hardcoded ok solution for all situations, so let's just hook on default canvas zoom situation
             
             ( previous_width, previous_height ) = CalculateMediaSize( previous_media, self._current_zoom )
             
             ( current_media_100_width, current_media_100_height ) = self._current_media.GetResolution()
             
-            self._current_zoom = previous_width / current_media_100_width
+            width_locked_zoom = previous_width / current_media_100_width
+            height_locked_zoom = previous_height / current_media_100_height
+            
+            width_locked_size = CalculateMediaContainerSize( self._current_media, width_locked_zoom, media_show_action )
+            height_locked_size = CalculateMediaContainerSize( self._current_media, height_locked_zoom, media_show_action )
+            
+            # if we have both landscape, we'll go height, otherwise default width
+            if previous_width > previous_height and current_media_100_width > current_media_100_height:
+                
+                lock_height = True
+                
+            else:
+                
+                lock_height = False
+                
+            
+            if previous_current_zoom == previous_default_zoom and previous_current_zoom <= previous_canvas_zoom * 1.02:
+                
+                # we were looking at the default zoom, near or at canvas edge(s), probably hadn't zoomed before switching comparison
+                # we want to make sure our comparison does not spill over the canvas edge
+                
+                width_a_concern = self._media_container.width() >= self.width() * 0.95
+                height_a_concern = self._media_container.height() >= self.height() * 0.95
+                
+                # locking by width will spill over bottom of screen
+                if height_a_concern and width_locked_size.height() > self._media_container.height():
+                    
+                    lock_height = True
+                    
+                
+                # locking by height will spill over right of screen
+                if width_a_concern and height_locked_size.width() > self._media_container.width():
+                    
+                    lock_height = False
+                    
+                
+            
+            if lock_height:
+                
+                self._current_zoom = height_locked_zoom
+                
+            else:
+                
+                self._current_zoom = width_locked_zoom
+                
             
             HG.client_controller.pub( 'canvas_new_zoom', self._canvas_key, self._current_zoom )
             
@@ -785,7 +832,7 @@ class Canvas( QW.QWidget ):
                     
                     child.activateWindow()
                     
-                    command = CAC.ApplicationCommand( CAC.APPLICATION_COMMAND_TYPE_SIMPLE, CAC.SIMPLE_SET_SEARCH_FOCUS )
+                    command = CAC.ApplicationCommand.STATICCreateSimpleCommand( CAC.SIMPLE_SET_SEARCH_FOCUS )
                     
                     panel.ProcessApplicationCommand( command )
                     
@@ -802,7 +849,7 @@ class Canvas( QW.QWidget ):
         
         manage_tags = ClientGUITopLevelWindowsPanels.FrameThatTakesScrollablePanel( self, title, frame_key )
         
-        panel = ClientGUITags.ManageTagsPanel( manage_tags, self._file_service_key, ( self._current_media, ), immediate_commit = True, canvas_key = self._canvas_key )
+        panel = ClientGUITags.ManageTagsPanel( manage_tags, self._location_context, ( self._current_media, ), immediate_commit = True, canvas_key = self._canvas_key )
         
         manage_tags.SetPanel( panel )
         
@@ -1007,6 +1054,8 @@ class Canvas( QW.QWidget ):
         
         now = HydrusData.GetNow()
         
+        view_timestamp = self._current_media_start_time
+        
         viewtime_delta = now - self._current_media_start_time
         
         self._current_media_start_time = now
@@ -1016,25 +1065,19 @@ class Canvas( QW.QWidget ):
             return
             
         
-        if self.PREVIEW_WINDOW:
-            
-            viewtype = 'preview'
-            
-        else:
-            
-            if isinstance( self, CanvasFilterDuplicates ):
-                
-                viewtype = 'media_duplicates_filter'
-                
-            else:
-                
-                viewtype = 'media'
-                
-            
-        
         hash = self._current_media.GetHash()
         
-        HG.client_controller.file_viewing_stats_manager.FinishViewing( viewtype, hash, viewtime_delta )
+        HG.client_controller.file_viewing_stats_manager.FinishViewing( hash, self.CANVAS_TYPE, view_timestamp, viewtime_delta )
+        
+    
+    def _SeekDeltaCurrentMedia( self, direction, duration_ms ):
+        
+        if self._current_media is None:
+            
+            return
+            
+        
+        self._media_container.SeekDelta( direction, duration_ms )
         
     
     def _ShowMediaInNewPage( self ):
@@ -1048,7 +1091,7 @@ class Canvas( QW.QWidget ):
         
         hashes = { hash }
         
-        HG.client_controller.pub( 'new_page_query', self._file_service_key, initial_hashes = hashes )
+        HG.client_controller.pub( 'new_page_query', self._location_context, initial_hashes = hashes )
         
     
     def _SizeAndPositionMediaContainer( self ):
@@ -1178,51 +1221,7 @@ class Canvas( QW.QWidget ):
             return
             
         
-        locations_manager = self._current_media.GetLocationsManager()
-        
-        local_file_services = HG.client_controller.services_manager.GetServices( ( HC.LOCAL_FILE_DOMAIN, ) )
-        
-        deleted_local_services = [ local_file_service for local_file_service in local_file_services if local_file_service.GetServiceKey() in locations_manager.GetDeleted() ]
-        
-        if len( deleted_local_services ) > 0:
-            
-            choice_tuples = []
-            
-            for service in deleted_local_services:
-                
-                choice_tuples.append( ( service.GetName(), service, service.GetName() ) )
-                
-            
-            try:
-                
-                undelete_service = ClientGUIDialogsQuick.SelectFromListButtons( self, 'Undelete for?', choice_tuples, message = 'Which service to undelete back to?' )
-                
-            except HydrusExceptions.CancelledException:
-                
-                return
-                
-            
-            do_it = False
-            
-            if len( choice_tuples ) > 1 or not HC.options[ 'confirm_trash' ]:
-                
-                do_it = True
-                
-            else:
-                
-                result = ClientGUIDialogsQuick.GetYesNo( self, 'Undelete this file back to {}?'.format( undelete_service.GetName() ) )
-                
-                if result == QW.QDialog.Accepted:
-                    
-                    do_it = True
-                    
-                
-            
-            if do_it:
-                
-                HG.client_controller.Write( 'content_updates', { undelete_service.GetServiceKey() : [ HydrusData.ContentUpdate( HC.CONTENT_TYPE_FILES, HC.CONTENT_UPDATE_UNDELETE, ( self._current_media.GetHash(), ) ) ] } )
-                
-            
+        ClientGUIMediaActions.UndeleteMedia( self, ( self._current_media, ) )
         
     
     def _UpdateBackgroundColour( self ):
@@ -1493,11 +1492,9 @@ class Canvas( QW.QWidget ):
         
         command_processed = True
         
-        data = command.GetData()
-        
         if command.IsSimpleCommand():
             
-            action = data
+            action = command.GetSimpleAction()
             
             if action == CAC.SIMPLE_MANAGE_FILE_RATINGS:
                 
@@ -1604,6 +1601,12 @@ class Canvas( QW.QWidget ):
                 
                 self._PausePlayCurrentMedia()
                 
+            elif action == CAC.SIMPLE_MEDIA_SEEK_DELTA:
+                
+                ( direction, ms ) = command.GetSimpleData()
+                
+                self._SeekDeltaCurrentMedia( direction, ms )
+                
             elif action == CAC.SIMPLE_MOVE_ANIMATION_TO_PREVIOUS_FRAME:
                 
                 self._media_container.GotoPreviousOrNextFrame( -1 )
@@ -1663,9 +1666,9 @@ class Canvas( QW.QWidget ):
         self._ResetMediaWindowCenterPosition()
         
     
-    def SetFileServiceKey( self, file_service_key: bytes ):
+    def SetLocationContext( self, location_context: ClientLocation.LocationContext ):
         
-        self._file_service_key = file_service_key
+        self._location_context = location_context
         
     
     def SetMedia( self, media: typing.Optional[ ClientMedia.MediaSingleton ] ):
@@ -1792,10 +1795,11 @@ class MediaContainerDragClickReportingFilter( QC.QObject ):
 class CanvasPanel( Canvas ):
     
     PREVIEW_WINDOW = True
+    CANVAS_TYPE = CC.CANVAS_PREVIEW
     
-    def __init__( self, parent, page_key, file_service_key ):
+    def __init__( self, parent, page_key, location_context: ClientLocation.LocationContext ):
         
-        Canvas.__init__( self, parent, file_service_key )
+        Canvas.__init__( self, parent, location_context )
         
         self._page_key = page_key
         
@@ -1820,11 +1824,20 @@ class CanvasPanel( Canvas ):
         self.ShowMenu()
         
     
+    def ClearMedia( self ):
+        
+        self._hidden_page_current_media = None
+        
+        Canvas.ClearMedia( self )
+        
+    
     def PageHidden( self ):
         
-        self._hidden_page_current_media = self._current_media
+        hidden_page_current_media = self._current_media
         
         self.ClearMedia()
+        
+        self._hidden_page_current_media = hidden_page_current_media
         
     
     def PageShown( self ):
@@ -1872,7 +1885,7 @@ class CanvasPanel( Canvas ):
             ClientGUIMenus.AppendSeparator( menu )
             
         
-        AddAudioVolumeMenu( menu, self._canvas_type )
+        AddAudioVolumeMenu( menu, self.CANVAS_TYPE )
         
         if self._current_media is not None:
             
@@ -1897,7 +1910,7 @@ class CanvasPanel( Canvas ):
             # brush this up to handle different service keys
             # undelete do an optional service key too
             
-            local_file_service_keys_we_are_in = sorted( locations_manager.GetCurrent().intersection( local_file_service_keys ), key = lambda fsk: HG.client_controller.services_manager.GetName( fsk ) )
+            local_file_service_keys_we_are_in = sorted( locations_manager.GetCurrent().intersection( local_file_service_keys ), key = HG.client_controller.services_manager.GetName )
             
             for file_service_key in local_file_service_keys_we_are_in:
                 
@@ -2042,9 +2055,9 @@ class CanvasPanel( Canvas ):
     
 class CanvasWithDetails( Canvas ):
     
-    def __init__( self, parent, file_service_key ):
+    def __init__( self, parent, location_context ):
         
-        Canvas.__init__( self, parent, file_service_key )
+        Canvas.__init__( self, parent, location_context )
         
         HG.client_controller.sub( self, 'RedrawDetails', 'refresh_all_tag_presentation_gui' )
         
@@ -2314,9 +2327,9 @@ class CanvasWithDetails( Canvas ):
     
 class CanvasWithHovers( CanvasWithDetails ):
     
-    def __init__( self, parent, file_service_key ):
+    def __init__( self, parent, location_context ):
         
-        CanvasWithDetails.__init__( self, parent, file_service_key )
+        CanvasWithDetails.__init__( self, parent, location_context )
         
         top_hover = self._GenerateHoverTopFrame()
         
@@ -2367,7 +2380,7 @@ class CanvasWithHovers( CanvasWithDetails ):
         
         can_hide = HydrusData.TimeHasPassedFloat( self._last_cursor_autohide_touch_time + hide_time )
         
-        can_check_again = self.underMouse()
+        can_check_again = ClientGUIFunctions.MouseIsOverWidget( self )
         
         if not CC.CAN_HIDE_MOUSE:
             
@@ -2415,7 +2428,7 @@ class CanvasWithHovers( CanvasWithDetails ):
                 
             
         
-        self._timer_cursor_hide_job = HG.client_controller.CallLaterQtSafe( self, 0.1, self._HideCursorCheck )
+        self._timer_cursor_hide_job = HG.client_controller.CallLaterQtSafe( self, 0.1, 'hide cursor check', self._HideCursorCheck )
         
     
     def _TryToCloseWindow( self ):
@@ -2493,6 +2506,8 @@ class CanvasWithHovers( CanvasWithDetails ):
                     
                     QG.QCursor.setPos( global_mouse_pos )
                     
+                    ClientGUIShortcuts.CUMULATIVE_MOUSEWARP_MANHATTAN_LENGTH += approx_distance
+                    
                 else:
                     
                     show_mouse = True
@@ -2544,11 +2559,9 @@ class CanvasWithHovers( CanvasWithDetails ):
         
         command_processed = True
         
-        data = command.GetData()
-        
         if command.IsSimpleCommand():
             
-            action = data
+            action = command.GetSimpleAction()
             
             if action == CAC.SIMPLE_CLOSE_MEDIA_VIEWER:
                 
@@ -2574,11 +2587,13 @@ class CanvasWithHovers( CanvasWithDetails ):
     
 class CanvasFilterDuplicates( CanvasWithHovers ):
     
-    def __init__( self, parent, file_search_context: ClientSearch.FileSearchContext, both_files_match ):
+    CANVAS_TYPE = CC.CANVAS_MEDIA_VIEWER_DUPLICATES
+    
+    def __init__( self, parent, file_search_context: ClientSearch.FileSearchContext, both_files_match, pixel_dupes_preference, max_hamming_distance ):
         
-        file_service_key = file_search_context.GetFileServiceKey()
+        location_context = file_search_context.GetLocationContext()
         
-        CanvasWithHovers.__init__( self, parent, file_service_key )
+        CanvasWithHovers.__init__( self, parent, location_context )
         
         hover = ClientGUICanvasHoverFrames.CanvasHoverFrameRightDuplicates( self, self, self._canvas_key )
         
@@ -2586,6 +2601,8 @@ class CanvasFilterDuplicates( CanvasWithHovers ):
         
         self._file_search_context = file_search_context
         self._both_files_match = both_files_match
+        self._pixel_dupes_preference = pixel_dupes_preference
+        self._max_hamming_distance = max_hamming_distance
         
         self._maintain_pan_and_zoom = True
         
@@ -2603,9 +2620,7 @@ class CanvasFilterDuplicates( CanvasWithHovers ):
         
         self._hashes_processed_in_this_batch = set()
         
-        file_service_key = self._file_search_context.GetFileServiceKey()
-        
-        self._media_list = ClientMedia.ListeningMediaList( file_service_key, [] )
+        self._media_list = ClientMedia.ListeningMediaList( location_context, [] )
         
         self._my_shortcuts_handler.AddShortcuts( 'media_viewer_browser' )
         self._my_shortcuts_handler.AddShortcuts( 'duplicate_filter' )
@@ -3071,8 +3086,6 @@ class CanvasFilterDuplicates( CanvasWithHovers ):
                 
             
         
-        file_service_key = self._file_search_context.GetFileServiceKey()
-        
         if len( self._unprocessed_pairs ) == 0:
             
             self._hashes_due_to_be_deleted_in_this_batch = set()
@@ -3081,11 +3094,11 @@ class CanvasFilterDuplicates( CanvasWithHovers ):
             
             self.ClearMedia()
             
-            self._media_list = ClientMedia.ListeningMediaList( file_service_key, [] )
+            self._media_list = ClientMedia.ListeningMediaList( self._location_context, [] )
             
             self._currently_fetching_pairs = True
             
-            HG.client_controller.CallToThread( self.THREADFetchPairs, self._file_search_context, self._both_files_match )
+            HG.client_controller.CallToThread( self.THREADFetchPairs, self._file_search_context, self._both_files_match, self._pixel_dupes_preference, self._max_hamming_distance )
             
             self.update()
             
@@ -3180,7 +3193,10 @@ class CanvasFilterDuplicates( CanvasWithHovers ):
                 media_results_with_better_first = ( second_media_result, first_media_result )
                 
             
-            self._media_list = ClientMedia.ListeningMediaList( file_service_key, media_results_with_better_first )
+            self._media_list = ClientMedia.ListeningMediaList( self._location_context, media_results_with_better_first )
+            
+            # reset zoom gubbins
+            self.SetMedia( None )
             
             self.SetMedia( self._media_list.GetFirst() )
 
@@ -3270,11 +3286,9 @@ class CanvasFilterDuplicates( CanvasWithHovers ):
         
         command_processed = True
         
-        data = command.GetData()
-        
         if command.IsSimpleCommand():
             
-            action = data
+            action = command.GetSimpleAction()
             
             if action == CAC.SIMPLE_DUPLICATE_FILTER_THIS_IS_BETTER_AND_DELETE_OTHER:
                 
@@ -3346,7 +3360,7 @@ class CanvasFilterDuplicates( CanvasWithHovers ):
                 
             
         
-        HG.client_controller.CallLaterQtSafe( self, 0.1, catch_up )
+        HG.client_controller.CallLaterQtSafe( self, 0.1, 'duplicates filter post-processing wait', catch_up )
         
     
     def SetMedia( self, media ):
@@ -3411,7 +3425,7 @@ class CanvasFilterDuplicates( CanvasWithHovers ):
             
         
     
-    def THREADFetchPairs( self, file_search_context, both_files_match ):
+    def THREADFetchPairs( self, file_search_context, both_files_match, pixel_dupes_preference, max_hamming_distance ):
         
         def qt_close():
             
@@ -3439,7 +3453,7 @@ class CanvasFilterDuplicates( CanvasWithHovers ):
             self._ShowNewPair()
             
         
-        result = HG.client_controller.Read( 'duplicate_pairs_for_filtering', file_search_context, both_files_match )
+        result = HG.client_controller.Read( 'duplicate_pairs_for_filtering', file_search_context, both_files_match, pixel_dupes_preference, max_hamming_distance )
         
         if len( result ) == 0:
             
@@ -3455,10 +3469,10 @@ class CanvasMediaList( ClientMedia.ListeningMediaList, CanvasWithHovers ):
     
     exitFocusMedia = QC.Signal( ClientMedia.Media )
     
-    def __init__( self, parent, page_key, file_service_key, media_results ):
+    def __init__( self, parent, page_key, location_context: ClientLocation.LocationContext, media_results ):
         
-        CanvasWithHovers.__init__( self, parent, file_service_key )
-        ClientMedia.ListeningMediaList.__init__( self, file_service_key, media_results )
+        CanvasWithHovers.__init__( self, parent, location_context )
+        ClientMedia.ListeningMediaList.__init__( self, location_context, media_results )
         
         self._page_key = page_key
         
@@ -3557,9 +3571,9 @@ class CanvasMediaList( ClientMedia.ListeningMediaList, CanvasWithHovers ):
                 
                 if not image_cache.HasImageRenderer( hash ):
                     
-                    # we do qt safe to make sure the job is cancelled if we are destroyed, but then that launches an immediate off-qt thread to actually poke around in image cache land, which _should_ be fast, but let's not mess around
+                    # we do qt safe to make sure the job is cancelled if we are destroyed
                     
-                    HG.client_controller.CallLaterQtSafe( self, delay, HG.client_controller.CallToThread, image_cache.PrefetchImageRenderer, media )
+                    HG.client_controller.CallLaterQtSafe( self, delay, 'image pre-fetch', image_cache.PrefetchImageRenderer, media )
                     
                 
             
@@ -3685,11 +3699,86 @@ class CanvasMediaList( ClientMedia.ListeningMediaList, CanvasWithHovers ):
             
         
     
+def CommitArchiveDelete( page_key: bytes, location_context: ClientLocation.LocationContext, kept_hashes: typing.Collection[ bytes ], deleted_hashes: typing.Collection[ bytes ] ):
+    
+    if HC.options[ 'remove_filtered_files' ]:
+        
+        all_hashes = set()
+        
+        all_hashes.update( deleted_hashes )
+        all_hashes.update( kept_hashes )
+        
+        HG.client_controller.pub( 'remove_media', page_key, all_hashes )
+        
+    
+    if not isinstance( deleted_hashes, list ):
+        
+        deleted_hashes = list( deleted_hashes )
+        
+    
+    if not isinstance( kept_hashes, list ):
+        
+        kept_hashes = list( kept_hashes )
+        
+    
+    location_context = location_context.Duplicate()
+    
+    location_context.FixMissingServices( ClientLocation.ValidLocalDomainsFilter )
+    
+    if location_context.IncludesCurrent():
+        
+        deletee_file_service_keys = location_context.current_service_keys
+        
+    else:
+        
+        # if we are in a weird search domain, then just say 'delete from all local'
+        deletee_file_service_keys = HG.client_controller.services_manager.GetServiceKeys( ( HC.LOCAL_FILE_DOMAIN, ) )
+        
+    
+    for block_of_deleted_hashes in HydrusData.SplitListIntoChunks( deleted_hashes, 64 ):
+        
+        service_keys_to_content_updates = {}
+        
+        reason = 'Deleted in Archive/Delete filter.'
+        
+        for deletee_file_service_key in deletee_file_service_keys:
+            
+            service_keys_to_content_updates[ deletee_file_service_key ] = [ HydrusData.ContentUpdate( HC.CONTENT_TYPE_FILES, HC.CONTENT_UPDATE_DELETE, block_of_deleted_hashes, reason = reason ) ]
+            
+        
+        HG.client_controller.WriteSynchronous( 'content_updates', service_keys_to_content_updates )
+        
+        # we do a second set of removes to deal with late processing and a quick F5ing user
+        
+        if HC.options[ 'remove_filtered_files' ]:
+            
+            HG.client_controller.pub( 'remove_media', page_key, block_of_deleted_hashes )
+            
+        
+        HG.client_controller.WaitUntilViewFree()
+        
+    
+    for block_of_kept_hashes in HydrusData.SplitListIntoChunks( kept_hashes, 64 ):
+        
+        service_keys_to_content_updates = {}
+        
+        service_keys_to_content_updates[ CC.COMBINED_LOCAL_FILE_SERVICE_KEY ] = [ HydrusData.ContentUpdate( HC.CONTENT_TYPE_FILES, HC.CONTENT_UPDATE_ARCHIVE, block_of_kept_hashes ) ]
+        
+        HG.client_controller.WriteSynchronous( 'content_updates', service_keys_to_content_updates )
+        
+        if HC.options[ 'remove_filtered_files' ]:
+            
+            HG.client_controller.pub( 'remove_media', page_key, block_of_kept_hashes )
+            
+        
+        HG.client_controller.WaitUntilViewFree()
+        
+    
 class CanvasMediaListFilterArchiveDelete( CanvasMediaList ):
     
-    def __init__( self, parent, page_key, file_service_key, media_results ):
+    def __init__( self, parent, page_key, location_context: ClientLocation.LocationContext, media_results ):
         
-        CanvasMediaList.__init__( self, parent, page_key, file_service_key, media_results )
+        CanvasMediaList.__init__( self, parent, page_key, location_context, media_results )
         
         self._my_shortcuts_handler.AddShortcuts( 'archive_delete_filter' )
         
@@ -3759,41 +3848,12 @@ class CanvasMediaListFilterArchiveDelete( CanvasMediaList ):
                 
             elif result == QW.QDialog.Accepted:
                 
-                service_keys_to_content_updates = {}
-                
-                if len( deleted_hashes ) > 0:
-                    
-                    reason = 'Deleted in Archive/Delete filter.'
-                    
-                    service_keys_to_content_updates[ CC.LOCAL_FILE_SERVICE_KEY ] = [ HydrusData.ContentUpdate( HC.CONTENT_TYPE_FILES, HC.CONTENT_UPDATE_DELETE, deleted_hashes, reason = reason ) ]
-                    
-                
-                if len( kept_hashes ) > 0:
-                    
-                    service_keys_to_content_updates[ CC.COMBINED_LOCAL_FILE_SERVICE_KEY ] = [ HydrusData.ContentUpdate( HC.CONTENT_TYPE_FILES, HC.CONTENT_UPDATE_ARCHIVE, kept_hashes ) ]
-                    
-                
-                # do this in one go to ensure if the user hits F5 real quick, they won't see the files again
-                
-                if len( service_keys_to_content_updates ) > 0:
-                    
-                    HG.client_controller.Write( 'content_updates', service_keys_to_content_updates )
-                    
-                
                 self._kept = set()
                 self._deleted = set()
                 
                 self._current_media = self._GetFirst() # so the pubsub on close is better
                 
-                if HC.options[ 'remove_filtered_files' ]:
-                    
-                    all_hashes = set()
-                    
-                    all_hashes.update( deleted_hashes )
-                    all_hashes.update( kept_hashes )
-                    
-                    HG.client_controller.pub( 'remove_media', self._page_key, all_hashes )
-                    
+                HG.client_controller.CallToThread( CommitArchiveDelete, self._page_key, self._location_context, kept_hashes, deleted_hashes )
                 
             
         
@@ -3885,11 +3945,9 @@ class CanvasMediaListFilterArchiveDelete( CanvasMediaList ):
         
         command_processed = True
         
-        data = command.GetData()
-        
         if command.IsSimpleCommand():
             
-            action = data
+            action = command.GetSimpleAction()
             
             if action in ( CAC.SIMPLE_ARCHIVE_DELETE_FILTER_KEEP, CAC.SIMPLE_ARCHIVE_FILE ):
                 
@@ -3947,9 +4005,9 @@ class CanvasMediaListFilterArchiveDelete( CanvasMediaList ):
     
 class CanvasMediaListNavigable( CanvasMediaList ):
     
-    def __init__( self, parent, page_key, file_service_key, media_results ):
+    def __init__( self, parent, page_key, location_context: ClientLocation.LocationContext, media_results ):
         
-        CanvasMediaList.__init__( self, parent, page_key, file_service_key, media_results )
+        CanvasMediaList.__init__( self, parent, page_key, location_context, media_results )
         
         self._my_shortcuts_handler.AddShortcuts( 'media_viewer_browser' )
         
@@ -3997,11 +4055,9 @@ class CanvasMediaListNavigable( CanvasMediaList ):
         
         command_processed = True
         
-        data = command.GetData()
-        
         if command.IsSimpleCommand():
             
-            action = data
+            action = command.GetSimpleAction()
             
             if action == CAC.SIMPLE_REMOVE_FILE_FROM_VIEW:
                 
@@ -4083,9 +4139,9 @@ class CanvasMediaListNavigable( CanvasMediaList ):
     
 class CanvasMediaListBrowser( CanvasMediaListNavigable ):
     
-    def __init__( self, parent, page_key, file_service_key, media_results, first_hash ):
+    def __init__( self, parent, page_key, location_context: ClientLocation.LocationContext, media_results, first_hash ):
         
-        CanvasMediaListNavigable.__init__( self, parent, page_key, file_service_key, media_results )
+        CanvasMediaListNavigable.__init__( self, parent, page_key, location_context, media_results )
         
         self._timer_slideshow_job = None
         self._timer_slideshow_interval = 0
@@ -4150,6 +4206,10 @@ class CanvasMediaListBrowser( CanvasMediaListNavigable ):
                         return
                         
                     
+                else:
+                    
+                    return
+                    
                 
             
         
@@ -4157,7 +4217,7 @@ class CanvasMediaListBrowser( CanvasMediaListNavigable ):
             
             self._timer_slideshow_interval = interval
             
-            self._timer_slideshow_job = HG.client_controller.CallLaterQtSafe( self, self._timer_slideshow_interval, self.DoSlideshow )
+            self._timer_slideshow_job = HG.client_controller.CallLaterQtSafe( self, self._timer_slideshow_interval, 'slideshow', self.DoSlideshow )
             
         
     
@@ -4190,11 +4250,11 @@ class CanvasMediaListBrowser( CanvasMediaListNavigable ):
                     
                     self._ShowNext()
                     
-                    self._timer_slideshow_job = HG.client_controller.CallLaterQtSafe( self, self._timer_slideshow_interval, self.DoSlideshow )
+                    self._timer_slideshow_job = HG.client_controller.CallLaterQtSafe( self, self._timer_slideshow_interval, 'slideshow', self.DoSlideshow )
                     
                 else:
                     
-                    self._timer_slideshow_job = HG.client_controller.CallLaterQtSafe( self, 0.1, self.DoSlideshow )
+                    self._timer_slideshow_job = HG.client_controller.CallLaterQtSafe( self, 0.1, 'slideshow', self.DoSlideshow )
                     
                 
             
@@ -4223,11 +4283,9 @@ class CanvasMediaListBrowser( CanvasMediaListNavigable ):
         
         command_processed = True
         
-        data = command.GetData()
-        
         if command.IsSimpleCommand():
             
-            action = data
+            action = command.GetSimpleAction()
             
             if action == CAC.SIMPLE_PAUSE_PLAY_SLIDESHOW:
                 
@@ -4315,7 +4373,7 @@ class CanvasMediaListBrowser( CanvasMediaListNavigable ):
                 ClientGUIMenus.AppendMenu( menu, zoom_menu, 'current zoom: {}'.format( ClientData.ConvertZoomToPercentage( self._current_zoom ) ) )
                 
             
-            AddAudioVolumeMenu( menu, self._canvas_type )
+            AddAudioVolumeMenu( menu, self.CANVAS_TYPE )
             
             if self.parentWidget().isFullScreen():
                 
@@ -4367,7 +4425,7 @@ class CanvasMediaListBrowser( CanvasMediaListNavigable ):
             # brush this up to handle different service keys
             # undelete do an optional service key too
             
-            local_file_service_keys_we_are_in = sorted( locations_manager.GetCurrent().intersection( local_file_service_keys ), key = lambda fsk: HG.client_controller.services_manager.GetName( fsk ) )
+            local_file_service_keys_we_are_in = sorted( locations_manager.GetCurrent().intersection( local_file_service_keys ), key = HG.client_controller.services_manager.GetName )
             
             for file_service_key in local_file_service_keys_we_are_in:
                 

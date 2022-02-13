@@ -12,7 +12,7 @@ from hydrus.core import HydrusConstants as HC
 from hydrus.core import HydrusData
 from hydrus.core import HydrusExceptions
 from hydrus.core import HydrusGlobals as HG
-from hydrus.core import HydrusPaths
+from hydrus.core import HydrusTemp
 from hydrus.core import HydrusSerialisable
 from hydrus.core.networking import HydrusServerRequest
 
@@ -301,7 +301,7 @@ class HydrusResource( Resource ):
             return request
             
         
-        if HG.server_profile_mode:
+        if HG.profile_mode:
             
             d = deferToThread( self._profileJob, self._threadDoGETJob, request )
             
@@ -324,7 +324,7 @@ class HydrusResource( Resource ):
             return request
             
         
-        if HG.server_profile_mode:
+        if HG.profile_mode:
             
             d = deferToThread( self._profileJob, self._threadDoOPTIONSJob, request )
             
@@ -347,7 +347,7 @@ class HydrusResource( Resource ):
             return request
             
         
-        if HG.server_profile_mode:
+        if HG.profile_mode:
             
             d = deferToThread( self._profileJob, self._threadDoPOSTJob, request )
             
@@ -590,7 +590,7 @@ class HydrusResource( Resource ):
     
     def _profileJob( self, call, request: HydrusServerRequest.HydrusRequest ):
         
-        HydrusData.Profile( 'client api {}'.format( request.path ), 'request.result_lmao = call( request )', globals(), locals(), min_duration_ms = 3, show_summary = True )
+        HydrusData.Profile( 'Profiling client api: {}'.format( request.path ), 'request.result_lmao = call( request )', globals(), locals(), min_duration_ms = HG.server_profile_min_job_time_ms )
         
         return request.result_lmao
         
@@ -609,55 +609,62 @@ class HydrusResource( Resource ):
         
         try:
             
+            e = failure.value
+            
+            if isinstance( e, HydrusExceptions.DBException ):
+                
+                e = e.db_e # could well be a DataException
+                
+            
             try: self._CleanUpTempFile( request )
             except: pass
             
             default_mime = HC.TEXT_HTML
             default_encoding = str
             
-            if failure.type == HydrusExceptions.BadRequestException:
+            if isinstance( e, HydrusExceptions.BadRequestException ):
                 
-                response_context = ResponseContext( 400, mime = default_mime, body = default_encoding( failure.value ) )
+                response_context = ResponseContext( 400, mime = default_mime, body = default_encoding( e ) )
                 
-            elif failure.type in ( HydrusExceptions.MissingCredentialsException, HydrusExceptions.DoesNotSupportCORSException ):
+            elif isinstance( e, ( HydrusExceptions.MissingCredentialsException, HydrusExceptions.DoesNotSupportCORSException ) ):
                 
-                response_context = ResponseContext( 401, mime = default_mime, body = default_encoding( failure.value ) )
+                response_context = ResponseContext( 401, mime = default_mime, body = default_encoding( e ) )
                 
-            elif failure.type == HydrusExceptions.InsufficientCredentialsException:
+            elif isinstance( e, HydrusExceptions.InsufficientCredentialsException ):
                 
-                response_context = ResponseContext( 403, mime = default_mime, body = default_encoding( failure.value ) )
+                response_context = ResponseContext( 403, mime = default_mime, body = default_encoding( e ) )
                 
-            elif failure.type in ( HydrusExceptions.NotFoundException, HydrusExceptions.DataMissing, HydrusExceptions.FileMissingException ):
+            elif isinstance( e, ( HydrusExceptions.NotFoundException, HydrusExceptions.DataMissing, HydrusExceptions.FileMissingException ) ):
                 
-                response_context = ResponseContext( 404, mime = default_mime, body = default_encoding( failure.value ) )
+                response_context = ResponseContext( 404, mime = default_mime, body = default_encoding( e ) )
                 
-            elif failure.type == HydrusExceptions.ConflictException:
+            elif isinstance( e, HydrusExceptions.ConflictException ):
                 
-                response_context = ResponseContext( 409, mime = default_mime, body = default_encoding( failure.value ) )
+                response_context = ResponseContext( 409, mime = default_mime, body = default_encoding( e ) )
                 
-            elif failure.type == HydrusExceptions.RangeNotSatisfiableException:
+            elif isinstance( e, HydrusExceptions.RangeNotSatisfiableException ):
                 
-                response_context = ResponseContext( 416, mime = default_mime, body = default_encoding( failure.value ) )
+                response_context = ResponseContext( 416, mime = default_mime, body = default_encoding( e ) )
                 
-            elif failure.type == HydrusExceptions.SessionException:
+            elif isinstance( e, HydrusExceptions.SessionException ):
                 
-                response_context = ResponseContext( 419, mime = default_mime, body = default_encoding( failure.value ) )
+                response_context = ResponseContext( 419, mime = default_mime, body = default_encoding( e ) )
                 
-            elif failure.type == HydrusExceptions.NetworkVersionException:
+            elif isinstance( e, HydrusExceptions.NetworkVersionException ):
                 
-                response_context = ResponseContext( 426, mime = default_mime, body = default_encoding( failure.value ) )
+                response_context = ResponseContext( 426, mime = default_mime, body = default_encoding( e ) )
                 
-            elif failure.type == HydrusExceptions.ServerBusyException:
+            elif isinstance( e, ( HydrusExceptions.ServerBusyException, HydrusExceptions.ShutdownException ) ):
                 
-                response_context = ResponseContext( 503, mime = default_mime, body = default_encoding( failure.value ) )
+                response_context = ResponseContext( 503, mime = default_mime, body = default_encoding( e ) )
                 
-            elif failure.type == HydrusExceptions.BandwidthException:
+            elif isinstance( e, HydrusExceptions.BandwidthException ):
                 
-                response_context = ResponseContext( 509, mime = default_mime, body = default_encoding( failure.value ) )
+                response_context = ResponseContext( 509, mime = default_mime, body = default_encoding( e ) )
                 
-            elif failure.type == HydrusExceptions.ServerException:
+            elif isinstance( e, HydrusExceptions.ServerException ):
                 
-                response_context = ResponseContext( 500, mime = default_mime, body = default_encoding( failure.value ) )
+                response_context = ResponseContext( 500, mime = default_mime, body = default_encoding( e ) )
                 
             else:
                 
@@ -897,7 +904,7 @@ class HydrusResource( Resource ):
             
             ( os_file_handle, temp_path ) = request.temp_file_info
             
-            HydrusPaths.CleanUpTempPath( os_file_handle, temp_path )
+            HydrusTemp.CleanUpTempPath( os_file_handle, temp_path )
             
             del request.temp_file_info
             

@@ -23,6 +23,7 @@ from hydrus.core.networking import HydrusNetworking
 from hydrus.client import ClientConstants as CC
 from hydrus.client import ClientData
 from hydrus.client import ClientFiles
+from hydrus.client import ClientLocation
 from hydrus.client import ClientThreading
 from hydrus.client.gui import QtPorting as QP
 from hydrus.client.importing import ClientImporting
@@ -57,6 +58,10 @@ def GenerateDefaultServiceDictionary( service_type ):
                 
                 dictionary[ 'update_downloading_paused' ] = False
                 dictionary[ 'update_processing_paused' ] = False
+                
+                content_types = tuple( HC.SERVICE_TYPES_TO_CONTENT_TYPES[ service_type ] )
+                
+                dictionary[ 'update_processing_content_types_paused' ] = [ [ content_type, False ] for content_type in content_types ]
                 
             
         
@@ -732,9 +737,9 @@ class ServiceRemote( Service ):
     
     def _GetBaseURL( self ):
         
-        ( host, port ) = self._credentials.GetAddress()
+        full_host = self._credentials.GetPortedAddress()
         
-        base_url = 'https://' + host + ':' + str( port ) + '/'
+        base_url = 'https://{}/'.format( full_host )
         
         return base_url
         
@@ -862,7 +867,7 @@ class ServiceRestricted( ServiceRemote ):
         
         self._account = HydrusNetwork.Account.GenerateUnknownAccount( account_key )
         
-        HG.client_controller.pub( 'notify_unknown_accounts' )
+        HG.client_controller.pub( 'notify_account_sync_due' )
         
         self._next_account_sync = HydrusData.GetNow()
         
@@ -943,9 +948,11 @@ class ServiceRestricted( ServiceRemote ):
         
         self._account = HydrusNetwork.Account.GenerateUnknownAccount( account_key )
         
-        HG.client_controller.pub( 'notify_unknown_accounts' )
-        
         self._next_account_sync = HydrusData.GetNow()
+        
+        self._SetDirty()
+        
+        HG.client_controller.pub( 'notify_account_sync_due' )
         
     
     def _GetSerialisableDictionary( self ):
@@ -987,6 +994,11 @@ class ServiceRestricted( ServiceRemote ):
             
         
         self._service_options = dictionary[ 'service_options' ]
+        
+    
+    def _SetNewServiceOptions( self, service_options ):
+        
+        self._service_options = service_options
         
     
     def CanSyncAccount( self, including_external_communication = True ):
@@ -1197,7 +1209,7 @@ class ServiceRestricted( ServiceRemote ):
             
             content_type = network_job.GetContentType()
             
-            if content_type == 'application/json':
+            if content_type is not None and content_type.startswith( 'application/json' ):
                 
                 parsed_args = HydrusNetworkVariableHandling.ParseNetworkBytesToParsedHydrusArgs( network_bytes )
                 
@@ -1259,6 +1271,18 @@ class ServiceRestricted( ServiceRemote ):
             
         
     
+    def SetAccountRefreshDueNow( self ):
+        
+        with self._lock:
+            
+            self._next_account_sync = HydrusData.GetNow() - 1
+            
+            self._SetDirty()
+            
+        
+        HG.client_controller.pub( 'notify_account_sync_due' )
+        
+    
     def SetClean( self ):
         
         ServiceRemote.SetClean( self )
@@ -1311,7 +1335,7 @@ class ServiceRestricted( ServiceRemote ):
                     
                     ( message, message_created ) = self._account.GetMessageAndTimestamp()
                     
-                    if message_created != original_message_created and not HydrusData.TimeHasPassed( message_created + ( 86400 * 5 ) ):
+                    if message != '' and message_created != original_message_created and not HydrusData.TimeHasPassed( message_created + ( 86400 * 5 ) ):
                         
                         m = 'New message for your account on {}:'.format( self._name )
                         m += os.linesep * 2
@@ -1332,7 +1356,9 @@ class ServiceRestricted( ServiceRemote ):
                     
                     with self._lock:
                         
-                        self._service_options = options_response[ 'service_options' ]
+                        service_options = options_response[ 'service_options' ]
+                        
+                        self._SetNewServiceOptions( service_options )
                         
                     
                 except HydrusExceptions.SerialisationException:
@@ -1430,6 +1456,14 @@ class ServiceRepository( ServiceRestricted ):
         ServiceRestricted._DealWithFundamentalNetworkError( self )
         
     
+    def _GetContentTypesWeAreProcessing( self ):
+        
+        content_types = { content_type for ( content_type, paused ) in self._update_processing_content_types_paused.items() if not paused }
+        content_types.add( HC.CONTENT_TYPE_DEFINITIONS )
+        
+        return content_types
+        
+    
     def _GetSerialisableDictionary( self ):
         
         dictionary = ServiceRestricted._GetSerialisableDictionary( self )
@@ -1438,6 +1472,7 @@ class ServiceRepository( ServiceRestricted ):
         dictionary[ 'do_a_full_metadata_resync' ] = self._do_a_full_metadata_resync
         dictionary[ 'update_downloading_paused' ] = self._update_downloading_paused
         dictionary[ 'update_processing_paused' ] = self._update_processing_paused
+        dictionary[ 'update_processing_content_types_paused' ] = list( self._update_processing_content_types_paused.items() )
         
         return dictionary
         
@@ -1478,6 +1513,15 @@ class ServiceRepository( ServiceRestricted ):
         self._update_downloading_paused = dictionary[ 'update_downloading_paused' ]
         self._update_processing_paused = dictionary[ 'update_processing_paused' ]
         
+        if 'update_processing_content_types_paused' not in dictionary:
+            
+            content_types = tuple( HC.SERVICE_TYPES_TO_CONTENT_TYPES[ self._service_type ] )
+            
+            dictionary[ 'update_processing_content_types_paused' ] = [ [ content_type, False ] for content_type in content_types ]
+            
+        
+        self._update_processing_content_types_paused = dict( dictionary[ 'update_processing_content_types_paused' ] )
+        
     
     def _LogFinalRowSpeed( self, precise_timestamp, total_rows, row_name ):
         
@@ -1505,6 +1549,18 @@ class ServiceRepository( ServiceRestricted ):
         
         HG.client_controller.frame_splash_status.SetText( popup_message, print_to_log = False )
         job_key.SetVariable( 'popup_text_2', popup_message )
+        
+    
+    def _SetNewServiceOptions( self, service_options ):
+        
+        if 'update_period' in service_options and 'update_period' in self._service_options and service_options[ 'update_period' ] != self._service_options[ 'update_period' ]:
+            
+            update_period = service_options[ 'update_period' ]
+            
+            self._metadata.CalculateNewNextUpdateDue( update_period )
+            
+        
+        ServiceRestricted._SetNewServiceOptions( self, service_options )
         
     
     def _SyncDownloadMetadata( self ):
@@ -1778,17 +1834,24 @@ class ServiceRepository( ServiceRestricted ):
             
             job_key.SetStatusTitle( title )
             
-            ( this_is_first_definitions_work, definition_hashes, this_is_first_content_work, content_hashes ) = HG.client_controller.Read( 'repository_update_hashes_to_process', self._service_key )
+            content_types_to_process = self._GetContentTypesWeAreProcessing()
             
-            if len( definition_hashes ) == 0 and len( content_hashes ) == 0:
+            ( this_is_first_definitions_work, definition_hashes_and_content_types, this_is_first_content_work, content_hashes_and_content_types ) = HG.client_controller.Read( 'repository_update_hashes_to_process', self._service_key, content_types_to_process )
+            
+            if len( definition_hashes_and_content_types ) == 0 and len( content_hashes_and_content_types ) == 0:
                 
                 return # no work to do
+                
+            
+            if len( content_hashes_and_content_types ) > 0:
+                
+                content_hashes_and_content_types = self._metadata.SortContentHashesAndContentTypes( content_hashes_and_content_types )
                 
             
             HydrusData.Print( title )
             
             num_updates_done = 0
-            num_updates_to_do = len( definition_hashes ) + len( content_hashes )
+            num_updates_to_do = len( definition_hashes_and_content_types ) + len( content_hashes_and_content_types )
             
             HG.client_controller.pub( 'message', job_key )
             HG.client_controller.frame_splash_status.SetTitleText( title, print_to_log = False )
@@ -1803,7 +1866,7 @@ class ServiceRepository( ServiceRestricted ):
             
             try:
                 
-                for definition_hash in definition_hashes:
+                for ( definition_hash, content_types ) in definition_hashes_and_content_types:
                     
                     progress_string = HydrusData.ConvertValueRangeToPrettyString( num_updates_done + 1, num_updates_to_do )
                     
@@ -1822,9 +1885,9 @@ class ServiceRepository( ServiceRestricted ):
                         
                     except HydrusExceptions.FileMissingException:
                         
-                        HG.client_controller.WriteSynchronous( 'schedule_repository_update_file_maintenance', self._service_key, ClientFiles.REGENERATE_FILE_DATA_JOB_FILE_INTEGRITY_PRESENCE )
+                        HG.client_controller.WriteSynchronous( 'schedule_repository_update_file_maintenance', self._service_key, ClientFiles.REGENERATE_FILE_DATA_JOB_FILE_INTEGRITY_PRESENCE_REMOVE_RECORD )
                         
-                        raise Exception( 'An unusual error has occured during repository processing: an update file ({}) was missing. Your repository should be paused, and all update files have been scheduled for a presence check. Please permit file maintenance to check them, or tell it to do so manually, before unpausing your repository.'.format( definition_hash.hex() ) )
+                        raise Exception( 'An unusual error has occured during repository processing: a definition update file ({}) was missing. Your repository should be paused, and all update files have been scheduled for a presence check. Please permit file maintenance under _database->file maintenance->review_ to finish its new work, which should fix this, before unpausing your repository.'.format( definition_hash.hex() ) )
                         
                     
                     with open( update_path, 'rb' ) as f:
@@ -1838,16 +1901,16 @@ class ServiceRepository( ServiceRestricted ):
                         
                     except:
                         
-                        HG.client_controller.WriteSynchronous( 'schedule_repository_update_file_maintenance', self._service_key, ClientFiles.REGENERATE_FILE_DATA_JOB_FILE_INTEGRITY_DATA )
+                        HG.client_controller.WriteSynchronous( 'schedule_repository_update_file_maintenance', self._service_key, ClientFiles.REGENERATE_FILE_DATA_JOB_FILE_INTEGRITY_DATA_REMOVE_RECORD )
                         
-                        raise Exception( 'An unusual error has occured during repository processing: an update file ({}) was invalid. Your repository should be paused, and all update files have been scheduled for an integrity check. Please permit file maintenance to check them, or tell it to do so manually, before unpausing your repository.'.format( definition_hash.hex() ) )
+                        raise Exception( 'An unusual error has occured during repository processing: a definition update file ({}) was invalid. Your repository should be paused, and all update files have been scheduled for an integrity check. Please permit file maintenance under _database->file maintenance->review_ to finish its new work, which should fix this, before unpausing your repository.'.format( definition_hash.hex() ) )
                         
                     
                     if not isinstance( definition_update, HydrusNetwork.DefinitionsUpdate ):
                         
                         HG.client_controller.WriteSynchronous( 'schedule_repository_update_file_maintenance', self._service_key, ClientFiles.REGENERATE_FILE_DATA_JOB_FILE_METADATA )
                         
-                        raise Exception( 'An unusual error has occured during repository processing: an update file ({}) has incorrect metadata. Your repository should be paused, and all update files have been scheduled for a metadata rescan. Please permit file maintenance to fix them, or tell it to do so manually, before unpausing your repository.'.format( definition_hash.hex() ) )
+                        raise Exception( 'An unusual error has occured during repository processing: a definition update file ({}) has incorrect metadata. Your repository should be paused, and all update files have been scheduled for a metadata rescan. Please permit file maintenance under _database->file maintenance->review_ to finish its new work, which should fix this, before unpausing your repository.'.format( definition_hash.hex() ) )
                         
                     
                     rows_in_this_update = definition_update.GetNumRows()
@@ -1880,7 +1943,7 @@ class ServiceRepository( ServiceRestricted ):
                         
                         start_time = HydrusData.GetNowPrecise()
                         
-                        num_rows_done = HG.client_controller.WriteSynchronous( 'process_repository_definitions', self._service_key, definition_hash, iterator_dict, job_key, work_time )
+                        num_rows_done = HG.client_controller.WriteSynchronous( 'process_repository_definitions', self._service_key, definition_hash, iterator_dict, content_types, job_key, work_time )
                         
                         time_it_took = HydrusData.GetNowPrecise() - start_time
                         
@@ -1930,7 +1993,7 @@ class ServiceRepository( ServiceRestricted ):
             
             try:
                 
-                for content_hash in content_hashes:
+                for ( content_hash, content_types ) in content_hashes_and_content_types:
                     
                     progress_string = HydrusData.ConvertValueRangeToPrettyString( num_updates_done + 1, num_updates_to_do )
                     
@@ -1949,9 +2012,9 @@ class ServiceRepository( ServiceRestricted ):
                         
                     except HydrusExceptions.FileMissingException:
                         
-                        HG.client_controller.WriteSynchronous( 'schedule_repository_update_file_maintenance', self._service_key, ClientFiles.REGENERATE_FILE_DATA_JOB_FILE_INTEGRITY_PRESENCE )
+                        HG.client_controller.WriteSynchronous( 'schedule_repository_update_file_maintenance', self._service_key, ClientFiles.REGENERATE_FILE_DATA_JOB_FILE_INTEGRITY_PRESENCE_REMOVE_RECORD )
                         
-                        raise Exception( 'An unusual error has occured during repository processing: an update file ({}) was missing. Your repository should be paused, and all update files have been scheduled for a presence check. Please permit file maintenance to check them, or tell it to do so manually, before unpausing your repository.'.format( content_hash.hex() ) )
+                        raise Exception( 'An unusual error has occured during repository processing: a content update file ({}) was missing. Your repository should be paused, and all update files have been scheduled for a presence check. Please permit file maintenance under _database->file maintenance->review_ to finish its new work, which should fix this, before unpausing your repository.'.format( content_hash.hex() ) )
                         
                     
                     with open( update_path, 'rb' ) as f:
@@ -1965,31 +2028,46 @@ class ServiceRepository( ServiceRestricted ):
                         
                     except:
                         
-                        HG.client_controller.WriteSynchronous( 'schedule_repository_update_file_maintenance', self._service_key, ClientFiles.REGENERATE_FILE_DATA_JOB_FILE_INTEGRITY_DATA )
+                        HG.client_controller.WriteSynchronous( 'schedule_repository_update_file_maintenance', self._service_key, ClientFiles.REGENERATE_FILE_DATA_JOB_FILE_INTEGRITY_DATA_REMOVE_RECORD )
                         
-                        raise Exception( 'An unusual error has occured during repository processing: an update file ({}) was invalid. Your repository should be paused, and all update files have been scheduled for an integrity check. Please permit file maintenance to check them, or tell it to do so manually, before unpausing your repository.'.format( content_hash.hex() ) )
+                        raise Exception( 'An unusual error has occured during repository processing: a content update file ({}) was invalid. Your repository should be paused, and all update files have been scheduled for an integrity check. Please permit file maintenance under _database->file maintenance->review_ to finish its new work, which should fix this, before unpausing your repository.'.format( content_hash.hex() ) )
                         
                     
                     if not isinstance( content_update, HydrusNetwork.ContentUpdate ):
                         
                         HG.client_controller.WriteSynchronous( 'schedule_repository_update_file_maintenance', self._service_key, ClientFiles.REGENERATE_FILE_DATA_JOB_FILE_METADATA )
                         
-                        raise Exception( 'An unusual error has occured during repository processing: an update file ({}) has incorrect metadata. Your repository should be paused, and all update files have been scheduled for a metadata rescan. Please permit file maintenance to fix them, or tell it to do so manually, before unpausing your repository.'.format( content_hash.hex() ) )
+                        raise Exception( 'An unusual error has occured during repository processing: a content update file ({}) has incorrect metadata. Your repository should be paused, and all update files have been scheduled for a metadata rescan. Please permit file maintenance under _database->file maintenance->review_ to finish its new work, which should fix this, before unpausing your repository.'.format( content_hash.hex() ) )
                         
                     
-                    rows_in_this_update = content_update.GetNumRows()
+                    rows_in_this_update = content_update.GetNumRows( content_types )
                     rows_done_in_this_update = 0
                     
                     iterator_dict = {}
                     
-                    iterator_dict[ 'new_files' ] = iter( content_update.GetNewFiles() )
-                    iterator_dict[ 'deleted_files' ] = iter( content_update.GetDeletedFiles() )
-                    iterator_dict[ 'new_mappings' ] = HydrusData.SmoothOutMappingIterator( content_update.GetNewMappings(), 50 )
-                    iterator_dict[ 'deleted_mappings' ] = HydrusData.SmoothOutMappingIterator( content_update.GetDeletedMappings(), 50 )
-                    iterator_dict[ 'new_parents' ] = iter( content_update.GetNewTagParents() )
-                    iterator_dict[ 'deleted_parents' ] = iter( content_update.GetDeletedTagParents() )
-                    iterator_dict[ 'new_siblings' ] = iter( content_update.GetNewTagSiblings() )
-                    iterator_dict[ 'deleted_siblings' ] = iter( content_update.GetDeletedTagSiblings() )
+                    if HC.CONTENT_TYPE_FILES in content_types:
+                        
+                        iterator_dict[ 'new_files' ] = iter( content_update.GetNewFiles() )
+                        iterator_dict[ 'deleted_files' ] = iter( content_update.GetDeletedFiles() )
+                        
+                    
+                    if HC.CONTENT_TYPE_MAPPINGS in content_types:
+                        
+                        iterator_dict[ 'new_mappings' ] = HydrusData.SmoothOutMappingIterator( content_update.GetNewMappings(), 50 )
+                        iterator_dict[ 'deleted_mappings' ] = HydrusData.SmoothOutMappingIterator( content_update.GetDeletedMappings(), 50 )
+                        
+                    
+                    if HC.CONTENT_TYPE_TAG_PARENTS in content_types:
+                        
+                        iterator_dict[ 'new_parents' ] = iter( content_update.GetNewTagParents() )
+                        iterator_dict[ 'deleted_parents' ] = iter( content_update.GetDeletedTagParents() )
+                        
+                    
+                    if HC.CONTENT_TYPE_TAG_SIBLINGS in content_types:
+                        
+                        iterator_dict[ 'new_siblings' ] = iter( content_update.GetNewTagSiblings() )
+                        iterator_dict[ 'deleted_siblings' ] = iter( content_update.GetDeletedTagSiblings() )
+                        
                     
                     while len( iterator_dict ) > 0:
                         
@@ -2013,7 +2091,7 @@ class ServiceRepository( ServiceRestricted ):
                         
                         start_time = HydrusData.GetNowPrecise()
                         
-                        num_rows_done = HG.client_controller.WriteSynchronous( 'process_repository_content', self._service_key, content_hash, iterator_dict, job_key, work_time )
+                        num_rows_done = HG.client_controller.WriteSynchronous( 'process_repository_content', self._service_key, content_hash, iterator_dict, content_types, job_key, work_time )
                         
                         time_it_took = HydrusData.GetNowPrecise() - start_time
                         
@@ -2060,13 +2138,13 @@ class ServiceRepository( ServiceRestricted ):
             
         except Exception as e:
             
+            message = 'Failed to process updates for the {} repository! The error follows:'.format( self._name )
+            
+            HydrusData.ShowText( message )
+            
+            HydrusData.ShowException( e )
+            
             with self._lock:
-                
-                message = 'Failed to process updates for the {} repository! The error follows:'.format( self._name )
-                
-                HydrusData.ShowText( message )
-                
-                HydrusData.ShowException( e )
                 
                 self._do_a_full_metadata_resync = True
                 
@@ -2082,12 +2160,15 @@ class ServiceRepository( ServiceRestricted ):
             
             if work_done:
                 
-                self._is_mostly_caught_up = None
+                with self._lock:
+                    
+                    self._is_mostly_caught_up = None
+                    
+                    self._SetDirty()
+                    
                 
                 HG.client_controller.pub( 'notify_new_force_refresh_tags_data' )
                 HG.client_controller.pub( 'notify_new_tag_display_application' )
-                
-                self._SetDirty()
                 
             
             job_key.DeleteVariable( 'popup_text_1' )
@@ -2111,9 +2192,24 @@ class ServiceRepository( ServiceRestricted ):
             service_key = self._service_key
             
         
-        ( download_value, processing_value, range ) = HG.client_controller.Read( 'repository_progress', service_key )
+        content_types_we_are_processing = self._GetContentTypesWeAreProcessing()
         
-        return processing_value < range
+        ( num_local_updates, num_updates, content_types_to_num_processed_updates, content_types_to_num_updates ) = HG.client_controller.Read( 'repository_progress', service_key )
+        
+        for ( content_type, num_processed_updates ) in content_types_to_num_processed_updates.items():
+            
+            if content_type not in content_types_we_are_processing:
+                
+                continue
+                
+            
+            if num_processed_updates < content_types_to_num_updates[ content_type ]:
+                
+                return True
+                
+            
+        
+        return False
         
     
     def CanSyncDownload( self ):
@@ -2161,6 +2257,28 @@ class ServiceRepository( ServiceRestricted ):
         with self._lock:
             
             return self._metadata.GetNextUpdateDueString( from_client = True )
+            
+        
+    
+    def GetNullificationPeriod( self ) -> int:
+        
+        with self._lock:
+            
+            if 'nullification_period' in self._service_options:
+                
+                nullification_period = self._service_options[ 'nullification_period' ]
+                
+                if not isinstance( nullification_period, int ):
+                    
+                    raise HydrusExceptions.DataMissing( 'This service has a bad anonymisation period! Try refreshing your account!' )
+                    
+                
+                return nullification_period
+                
+            else:
+                
+                raise HydrusExceptions.DataMissing( 'This service does not seem to have an anonymisation period! Try refreshing your account!' )
+                
             
         
     
@@ -2240,7 +2358,13 @@ class ServiceRepository( ServiceRestricted ):
             service_key = self._service_key
             
         
-        unprocessed_update_hashes = HG.client_controller.Read( 'repository_unprocessed_hashes', service_key )
+        content_types_to_process = self._GetContentTypesWeAreProcessing()
+        
+        ( this_is_first_definitions_work, definition_hashes_and_content_types, this_is_first_content_work, content_hashes_and_content_types ) = HG.client_controller.Read( 'repository_update_hashes_to_process', self._service_key, content_types_to_process )
+        
+        missing_update_hashes = HG.client_controller.Read( 'missing_repository_update_hashes', service_key )
+        
+        unprocessed_update_hashes = set( ( hash for ( hash, content_types ) in definition_hashes_and_content_types ) ).union( ( hash for ( hash, content_types ) in content_hashes_and_content_types ) ).union( missing_update_hashes )
         
         with self._lock:
             
@@ -2267,11 +2391,18 @@ class ServiceRepository( ServiceRestricted ):
             
         
     
-    def IsPausedUpdateProcessing( self ):
+    def IsPausedUpdateProcessing( self, content_type = None ):
         
         with self._lock:
             
-            return self._update_processing_paused
+            if content_type is None:
+                
+                return self._update_processing_paused
+                
+            else:
+                
+                return self._update_processing_content_types_paused[ content_type ]
+                
             
         
     
@@ -2294,15 +2425,24 @@ class ServiceRepository( ServiceRestricted ):
             
         
     
-    def PausePlayUpdateProcessing( self ):
+    def PausePlayUpdateProcessing( self, content_type = None ):
         
         with self._lock:
             
-            self._update_processing_paused = not self._update_processing_paused
+            if content_type is None:
+                
+                self._update_processing_paused = not self._update_processing_paused
+                
+            else:
+                
+                self._update_processing_content_types_paused[ content_type ] = not self._update_processing_content_types_paused[ content_type ]
+                
             
             self._SetDirty()
             
             paused = self._update_processing_paused
+            
+            self._is_mostly_caught_up = None
             
         
         HG.client_controller.pub( 'important_dirt_to_clean' )
@@ -2331,7 +2471,7 @@ class ServiceRepository( ServiceRestricted ):
             self._SetDirty()
             
         
-        HG.client_controller.pub( 'notify_unknown_accounts' )
+        HG.client_controller.pub( 'notify_account_sync_due' )
         HG.client_controller.pub( 'important_dirt_to_clean' )
         
         HG.client_controller.Write( 'reset_repository', self )
@@ -2358,7 +2498,10 @@ class ServiceRepository( ServiceRestricted ):
                 
             except Exception as e:
                 
-                self._DelayFutureRequests( str( e ) )
+                with self._lock:
+                    
+                    self._DelayFutureRequests( str( e ) )
+                    
                 
                 HydrusData.ShowText( 'The service "{}" encountered an error while trying to sync! The error was "{}". It will not do any work for a little while. If the fix is not obvious, please elevate this to hydrus dev.'.format( self._name, str( e ) ) )
                 
@@ -2385,6 +2528,11 @@ class ServiceRepository( ServiceRestricted ):
     def SyncThumbnails( self, stop_time ):
         
         with self._lock:
+            
+            if self._service_type != HC.FILE_REPOSITORY:
+                
+                return
+                
             
             if not self._CanSyncDownload():
                 
@@ -2445,7 +2593,10 @@ class ServiceRepository( ServiceRestricted ):
                         
                     except HydrusExceptions.CancelledException as e:
                         
-                        self._DelayFutureRequests( str( e ) )
+                        with self._lock:
+                            
+                            self._DelayFutureRequests( str( e ) )
+                            
                         
                         return
                         
@@ -2500,9 +2651,9 @@ class ServiceIPFS( ServiceRemote ):
     
     def _GetAPIBaseURL( self ):
         
-        ( host, port ) = self._credentials.GetAddress()
+        full_host = self._credentials.GetPortedAddress()
         
-        api_base_url = 'http://' + host + ':' + str( port ) + '/api/v0/'
+        api_base_url = 'http://{}/api/v0/'.format( full_host )
         
         return api_base_url
         
@@ -3172,9 +3323,9 @@ class ServicesManager( object ):
             
         
     
-    def GetDefaultLocalFileServiceKey( self ) -> bytes:
+    def GetDefaultLocationContext( self ) -> bytes:
         
-        return CC.LOCAL_FILE_SERVICE_KEY
+        return ClientLocation.LocationContext.STATICCreateSimple( CC.LOCAL_FILE_SERVICE_KEY )
         
     
     def GetLocalMediaFileServices( self ):

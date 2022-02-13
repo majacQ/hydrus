@@ -103,6 +103,9 @@ def AppendMenuItem( menu, label, description, callable, *args, **kwargs ):
     
 def AppendMenuLabel( menu, label, description = '' ):
     
+    original_label_text = label
+    label = SanitiseLabel( label )
+    
     if description is None:
         
         description = ''
@@ -123,7 +126,7 @@ def AppendMenuLabel( menu, label, description = '' ):
 
     menu.addAction( menu_item )
     
-    BindMenuItem( menu_item, HG.client_controller.pub, 'clipboard', 'text', label )
+    BindMenuItem( menu_item, HG.client_controller.pub, 'clipboard', 'text', original_label_text )
     
     return menu_item
     
@@ -163,11 +166,11 @@ def GetEventCallable( callable, *args, **kwargs ):
     
     def event_callable( checked_state ):
         
-        if HG.menu_profile_mode:
+        if HG.profile_mode:
             
             summary = 'Profiling menu: ' + repr( callable )
             
-            HydrusData.Profile( summary, 'callable( *args, **kwargs )', globals(), locals(), min_duration_ms = 3, show_summary = True )
+            HydrusData.Profile( summary, 'callable( *args, **kwargs )', globals(), locals(), min_duration_ms = HG.menu_profile_min_job_time_ms )
             
         else:
             
@@ -177,7 +180,7 @@ def GetEventCallable( callable, *args, **kwargs ):
     
     return event_callable
     
-def SanitiseLabel( label ):
+def SanitiseLabel( label: str ) -> str:
     
     if label == '':
         
@@ -185,4 +188,16 @@ def SanitiseLabel( label ):
         
     
     return label.replace( '&', '&&' )
+    
+def SetMenuItemLabel( menu_item: QW.QAction, label: str ):
+    
+    label = SanitiseLabel( label )
+    
+    menu_item.setText( label )
+    
+def SetMenuTitle( menu: QW.QMenu, label: str ):
+    
+    label = SanitiseLabel( label )
+    
+    menu.setTitle( label )
     

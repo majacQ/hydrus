@@ -81,8 +81,8 @@ options = {}
 # Misc
 
 NETWORK_VERSION = 20
-SOFTWARE_VERSION = 443
-CLIENT_API_VERSION = 17
+SOFTWARE_VERSION = 473
+CLIENT_API_VERSION = 25
 
 SERVER_THUMBNAIL_DIMENSIONS = ( 200, 200 )
 
@@ -90,7 +90,7 @@ HYDRUS_KEY_LENGTH = 32
 
 READ_BLOCK_SIZE = 256 * 1024
 
-lifetimes = [ ( 'one month', 31 * 86400 ), ( 'three months', 3 * 31 * 86400 ), ( 'six months', 6 * 31 * 86400 ), ( 'one year', 12 * 31 * 86400 ), ( 'two years', 24 * 31 * 86400 ), ( 'five years', 60 * 31 * 86400 ), ( 'does not expire', None ) ]
+lifetimes = [ ( 'one month', 30 * 86400 ), ( 'three months', 3 * 30 * 86400 ), ( 'six months', 6 * 30 * 86400 ), ( 'one year', 365 * 86400 ), ( 'two years', 2 * 365 * 86400 ), ( 'five years', 5 * 365 * 86400 ), ( 'does not expire', None ) ]
 
 # some typing stuff
 
@@ -150,6 +150,7 @@ CONTENT_TYPE_TITLE = 17
 CONTENT_TYPE_NOTES = 18
 CONTENT_TYPE_FILE_VIEWING_STATS = 19
 CONTENT_TYPE_TAG = 20
+CONTENT_TYPE_DEFINITIONS = 21
 
 content_type_string_lookup = {}
 
@@ -173,8 +174,7 @@ content_type_string_lookup[ CONTENT_TYPE_TIMESTAMP ] = 'timestamp'
 content_type_string_lookup[ CONTENT_TYPE_TITLE ] = 'title'
 content_type_string_lookup[ CONTENT_TYPE_NOTES ] = 'notes'
 content_type_string_lookup[ CONTENT_TYPE_FILE_VIEWING_STATS ] = 'file viewing stats'
-
-REPOSITORY_CONTENT_TYPES = [ CONTENT_TYPE_FILES, CONTENT_TYPE_MAPPINGS, CONTENT_TYPE_TAG_PARENTS, CONTENT_TYPE_TAG_SIBLINGS ]
+content_type_string_lookup[ CONTENT_TYPE_DEFINITIONS ] = 'definitions'
 
 CONTENT_UPDATE_ADD = 0
 CONTENT_UPDATE_DELETE = 1
@@ -265,18 +265,6 @@ EXPORT_FOLDER_TYPE_SYNCHRONISE = 1
 FILTER_WHITELIST = 0
 FILTER_BLACKLIST = 1
 
-HAMMING_EXACT_MATCH = 0
-HAMMING_VERY_SIMILAR = 2
-HAMMING_SIMILAR = 4
-HAMMING_SPECULATIVE = 8
-
-hamming_string_lookup = {}
-
-hamming_string_lookup[ HAMMING_EXACT_MATCH ] = 'exact match'
-hamming_string_lookup[ HAMMING_VERY_SIMILAR ] = 'very similar'
-hamming_string_lookup[ HAMMING_SIMILAR ] = 'similar'
-hamming_string_lookup[ HAMMING_SPECULATIVE ] = 'speculative'
-
 HYDRUS_CLIENT = 0
 HYDRUS_SERVER = 1
 HYDRUS_TEST = 2
@@ -285,6 +273,28 @@ MAINTENANCE_IDLE = 0
 MAINTENANCE_SHUTDOWN = 1
 MAINTENANCE_FORCED = 2
 MAINTENANCE_ACTIVE = 3
+
+NICE_RESOLUTIONS = {}
+
+NICE_RESOLUTIONS[ ( 640, 480 ) ] = '480p'
+NICE_RESOLUTIONS[ ( 1280, 720 ) ] = '720p'
+NICE_RESOLUTIONS[ ( 1920, 1080 ) ] = '1080p'
+NICE_RESOLUTIONS[ ( 3840, 2160 ) ] = '4k'
+NICE_RESOLUTIONS[ ( 720, 1280 ) ] = 'vertical 720p'
+NICE_RESOLUTIONS[ ( 1080, 1920 ) ] = 'vertical 1080p'
+NICE_RESOLUTIONS[ ( 2160, 3840 ) ] = 'vertical 4k'
+
+NICE_RATIOS = {}
+
+NICE_RATIOS[ 1 ] = '1:1'
+NICE_RATIOS[ 4 / 3 ] = '4:3'
+NICE_RATIOS[ 5 / 4 ] = '5:4'
+NICE_RATIOS[ 16 / 9 ] = '16:9'
+NICE_RATIOS[ 21 / 9 ] = '21:9'
+NICE_RATIOS[ 47 / 20 ] = '2.35:1'
+NICE_RATIOS[ 9 / 16 ] = '9:16'
+NICE_RATIOS[ 2 / 3 ] = '2:3'
+NICE_RATIOS[ 4 / 5 ] = '4:5'
 
 GET_DATA = 0
 POST_DATA = 1
@@ -366,6 +376,7 @@ COMBINED_LOCAL_FILE = 15
 TEST_SERVICE = 16
 LOCAL_NOTES = 17
 CLIENT_API_SERVICE = 18
+COMBINED_DELETED_FILE = 19
 SERVER_ADMIN = 99
 NULL_SERVICE = 100
 
@@ -390,6 +401,7 @@ service_string_lookup[ IPFS ] = 'ipfs daemon'
 service_string_lookup[ TEST_SERVICE ] = 'test service'
 service_string_lookup[ LOCAL_NOTES ] = 'local file notes service'
 service_string_lookup[ SERVER_ADMIN ] = 'hydrus server administration service'
+service_string_lookup[ COMBINED_DELETED_FILE ] = 'virtual deleted file service'
 service_string_lookup[ NULL_SERVICE ] = 'null service'
 
 LOCAL_FILE_SERVICES = ( LOCAL_FILE_DOMAIN, LOCAL_FILE_TRASH_DOMAIN, COMBINED_LOCAL_FILE )
@@ -407,11 +419,32 @@ REAL_TAG_SERVICES = ( LOCAL_TAG, TAG_REPOSITORY )
 ADDREMOVABLE_SERVICES = ( LOCAL_TAG, LOCAL_RATING_LIKE, LOCAL_RATING_NUMERICAL, FILE_REPOSITORY, TAG_REPOSITORY, SERVER_ADMIN, IPFS )
 MUST_HAVE_AT_LEAST_ONE_SERVICES = ( LOCAL_TAG, )
 NONEDITABLE_SERVICES = ( LOCAL_FILE_DOMAIN, LOCAL_FILE_TRASH_DOMAIN, COMBINED_FILE, COMBINED_TAG, COMBINED_LOCAL_FILE )
-AUTOCOMPLETE_CACHE_SPECIFIC_FILE_SERVICES = ( LOCAL_FILE_DOMAIN, LOCAL_FILE_TRASH_DOMAIN, COMBINED_LOCAL_FILE, FILE_REPOSITORY )
-TAG_CACHE_SPECIFIC_FILE_SERVICES = ( COMBINED_LOCAL_FILE, FILE_REPOSITORY )
-ALL_SERVICES = REMOTE_SERVICES + LOCAL_SERVICES + ( COMBINED_FILE, COMBINED_TAG )
+
+FILE_SERVICES_WITH_NO_DELETE_RECORD = ( LOCAL_FILE_TRASH_DOMAIN, COMBINED_DELETED_FILE )
+
+FILE_SERVICES_WITH_SPECIFIC_MAPPING_CACHES = ( LOCAL_FILE_DOMAIN, LOCAL_FILE_TRASH_DOMAIN, COMBINED_LOCAL_FILE, COMBINED_DELETED_FILE, FILE_REPOSITORY, IPFS )
+FILE_SERVICES_WITH_SPECIFIC_TAG_LOOKUP_CACHES = ( COMBINED_LOCAL_FILE, COMBINED_DELETED_FILE, FILE_REPOSITORY, IPFS )
+
+FILE_SERVICES_COVERED_BY_COMBINED_LOCAL_FILE = ( LOCAL_FILE_DOMAIN, LOCAL_FILE_TRASH_DOMAIN )
+FILE_SERVICES_COVERED_BY_COMBINED_DELETED_FILE = ( LOCAL_FILE_DOMAIN, FILE_REPOSITORY, IPFS )
+
+ALL_SERVICES = REMOTE_SERVICES + LOCAL_SERVICES + ( COMBINED_FILE, COMBINED_TAG, COMBINED_DELETED_FILE )
+ALL_TAG_SERVICES = REAL_TAG_SERVICES + ( COMBINED_TAG, )
+ALL_FILE_SERVICES = FILE_SERVICES + ( COMBINED_FILE, )
 
 SERVICES_WITH_THUMBNAILS = [ FILE_REPOSITORY, LOCAL_FILE_DOMAIN ]
+
+SERVICE_TYPES_TO_CONTENT_TYPES = {
+    FILE_REPOSITORY : ( CONTENT_TYPE_FILES, ),
+    LOCAL_FILE_DOMAIN : ( CONTENT_TYPE_FILES, ),
+    LOCAL_FILE_TRASH_DOMAIN : ( CONTENT_TYPE_FILES, ),
+    COMBINED_LOCAL_FILE : ( CONTENT_TYPE_FILES, ),
+    IPFS : ( CONTENT_TYPE_FILES, ),
+    TAG_REPOSITORY : ( CONTENT_TYPE_MAPPINGS, CONTENT_TYPE_TAG_PARENTS, CONTENT_TYPE_TAG_SIBLINGS ),
+    LOCAL_TAG : ( CONTENT_TYPE_MAPPINGS, CONTENT_TYPE_TAG_PARENTS, CONTENT_TYPE_TAG_SIBLINGS ),
+    LOCAL_RATING_LIKE : ( CONTENT_TYPE_RATINGS, ),
+    LOCAL_RATING_NUMERICAL : ( CONTENT_TYPE_RATINGS, )
+}
 
 DELETE_FILES_PETITION = 0
 DELETE_TAG_PETITION = 1
@@ -514,28 +547,31 @@ GENERAL_VIDEO = 42
 GENERAL_APPLICATION = 43
 GENERAL_ANIMATION = 44
 APPLICATION_CLIP = 45
+AUDIO_WAVE = 46
+VIDEO_OGV = 47
+AUDIO_MKV = 48
 APPLICATION_OCTET_STREAM = 100
 APPLICATION_UNKNOWN = 101
 
 GENERAL_FILETYPES = { GENERAL_APPLICATION, GENERAL_AUDIO, GENERAL_IMAGE, GENERAL_VIDEO, GENERAL_ANIMATION }
 
-SEARCHABLE_MIMES = { IMAGE_JPEG, IMAGE_PNG, IMAGE_APNG, IMAGE_GIF, IMAGE_WEBP, IMAGE_TIFF, IMAGE_ICON, APPLICATION_FLASH, VIDEO_AVI, VIDEO_FLV, VIDEO_MOV, VIDEO_MP4, VIDEO_MKV, VIDEO_REALMEDIA, VIDEO_WEBM, VIDEO_MPEG, APPLICATION_CLIP, APPLICATION_PSD, APPLICATION_PDF, APPLICATION_ZIP, APPLICATION_RAR, APPLICATION_7Z, AUDIO_M4A, AUDIO_MP3, AUDIO_REALMEDIA, AUDIO_OGG, AUDIO_FLAC, AUDIO_TRUEAUDIO, AUDIO_WMA, VIDEO_WMV }
+SEARCHABLE_MIMES = { IMAGE_JPEG, IMAGE_PNG, IMAGE_APNG, IMAGE_GIF, IMAGE_WEBP, IMAGE_TIFF, IMAGE_ICON, APPLICATION_FLASH, VIDEO_AVI, VIDEO_FLV, VIDEO_MOV, VIDEO_MP4, VIDEO_MKV, VIDEO_REALMEDIA, VIDEO_WEBM, VIDEO_OGV, VIDEO_MPEG, APPLICATION_CLIP, APPLICATION_PSD, APPLICATION_PDF, APPLICATION_ZIP, APPLICATION_RAR, APPLICATION_7Z, AUDIO_M4A, AUDIO_MP3, AUDIO_REALMEDIA, AUDIO_OGG, AUDIO_FLAC, AUDIO_WAVE, AUDIO_TRUEAUDIO, AUDIO_WMA, VIDEO_WMV, AUDIO_MKV }
 
 STORABLE_MIMES = set( SEARCHABLE_MIMES ).union( { APPLICATION_HYDRUS_UPDATE_CONTENT, APPLICATION_HYDRUS_UPDATE_DEFINITIONS } )
 
 ALLOWED_MIMES = set( STORABLE_MIMES ).union( { IMAGE_BMP } )
 
-DECOMPRESSION_BOMB_IMAGES = ( IMAGE_JPEG, IMAGE_PNG )
+DECOMPRESSION_BOMB_IMAGES = { IMAGE_JPEG, IMAGE_PNG }
 
-IMAGES = ( IMAGE_JPEG, IMAGE_PNG, IMAGE_BMP, IMAGE_WEBP, IMAGE_TIFF, IMAGE_ICON )
+IMAGES = { IMAGE_JPEG, IMAGE_PNG, IMAGE_BMP, IMAGE_WEBP, IMAGE_TIFF, IMAGE_ICON }
 
-ANIMATIONS = ( IMAGE_GIF, IMAGE_APNG )
+ANIMATIONS = { IMAGE_GIF, IMAGE_APNG }
 
-AUDIO = ( AUDIO_M4A, AUDIO_MP3, AUDIO_OGG, AUDIO_FLAC, AUDIO_WMA, AUDIO_REALMEDIA, AUDIO_TRUEAUDIO )
+AUDIO = { AUDIO_M4A, AUDIO_MP3, AUDIO_OGG, AUDIO_FLAC, AUDIO_WAVE, AUDIO_WMA, AUDIO_REALMEDIA, AUDIO_TRUEAUDIO, AUDIO_MKV }
 
-VIDEO = ( VIDEO_AVI, VIDEO_FLV, VIDEO_MOV, VIDEO_MP4, VIDEO_WMV, VIDEO_MKV, VIDEO_REALMEDIA, VIDEO_WEBM, VIDEO_MPEG )
+VIDEO = { VIDEO_AVI, VIDEO_FLV, VIDEO_MOV, VIDEO_MP4, VIDEO_WMV, VIDEO_MKV, VIDEO_REALMEDIA, VIDEO_WEBM, VIDEO_OGV, VIDEO_MPEG }
 
-APPLICATIONS = ( APPLICATION_FLASH, APPLICATION_PSD, APPLICATION_CLIP, APPLICATION_PDF, APPLICATION_ZIP, APPLICATION_RAR, APPLICATION_7Z )
+APPLICATIONS = { APPLICATION_FLASH, APPLICATION_PSD, APPLICATION_CLIP, APPLICATION_PDF, APPLICATION_ZIP, APPLICATION_RAR, APPLICATION_7Z }
 
 general_mimetypes_to_mime_groups = {}
 
@@ -558,13 +594,17 @@ for ( general_mime_type, mimes_in_type ) in general_mimetypes_to_mime_groups.ite
 MIMES_THAT_DEFINITELY_HAVE_AUDIO = tuple( [ APPLICATION_FLASH ] + list( AUDIO ) )
 MIMES_THAT_MAY_HAVE_AUDIO = tuple( list( MIMES_THAT_DEFINITELY_HAVE_AUDIO ) + list( VIDEO ) )
 
-ARCHIVES = ( APPLICATION_ZIP, APPLICATION_HYDRUS_ENCRYPTED_ZIP, APPLICATION_RAR, APPLICATION_7Z )
+ARCHIVES = { APPLICATION_ZIP, APPLICATION_HYDRUS_ENCRYPTED_ZIP, APPLICATION_RAR, APPLICATION_7Z }
 
-MIMES_WITH_THUMBNAILS = ( APPLICATION_FLASH, IMAGE_JPEG, IMAGE_PNG, IMAGE_APNG, IMAGE_GIF, IMAGE_BMP, IMAGE_WEBP, IMAGE_TIFF, IMAGE_ICON, VIDEO_AVI, VIDEO_FLV, VIDEO_MOV, VIDEO_MP4, VIDEO_WMV, VIDEO_MKV, VIDEO_REALMEDIA, VIDEO_WEBM, VIDEO_MPEG )
+MIMES_WITH_THUMBNAILS = set( IMAGES ).union( ANIMATIONS ).union( VIDEO ).union( { APPLICATION_FLASH, APPLICATION_CLIP, APPLICATION_PSD } )
+
+# I think this is correct, but not certain. we've seen something called icc_profile from PIL for all of these I think!
+FILES_THAT_CAN_HAVE_ICC_PROFILE = { IMAGE_JPEG, IMAGE_PNG, IMAGE_GIF, IMAGE_TIFF }
+
+FILES_THAT_CAN_HAVE_PIXEL_HASH = set( IMAGES ).union( { IMAGE_GIF } )
+FILES_THAT_HAVE_PERCEPTUAL_HASH = set( IMAGES )
 
 HYDRUS_UPDATE_FILES = ( APPLICATION_HYDRUS_UPDATE_DEFINITIONS, APPLICATION_HYDRUS_UPDATE_CONTENT )
-
-MIMES_WE_CAN_PHASH = ( IMAGE_JPEG, IMAGE_PNG, IMAGE_WEBP, IMAGE_TIFF, IMAGE_ICON )
 
 mime_enum_lookup = {}
 
@@ -604,6 +644,9 @@ mime_enum_lookup[ 'audio/ogg' ] = AUDIO_OGG
 mime_enum_lookup[ 'audio/vnd.rn-realaudio' ] = AUDIO_REALMEDIA
 mime_enum_lookup[ 'audio/x-tta' ] = AUDIO_TRUEAUDIO
 mime_enum_lookup[ 'audio/flac' ] = AUDIO_FLAC
+mime_enum_lookup[ 'audio/x-wav' ] = AUDIO_WAVE
+mime_enum_lookup[ 'audio/wav' ] = AUDIO_WAVE
+mime_enum_lookup[ 'audio/wave' ] = AUDIO_WAVE
 mime_enum_lookup[ 'audio/x-ms-wma' ] = AUDIO_WMA
 mime_enum_lookup[ 'text/html' ] = TEXT_HTML
 mime_enum_lookup[ 'text/plain' ] = TEXT_PLAIN
@@ -614,6 +657,7 @@ mime_enum_lookup[ 'video/mp4' ] = VIDEO_MP4
 mime_enum_lookup[ 'video/mpeg' ] = VIDEO_MPEG
 mime_enum_lookup[ 'video/x-ms-wmv' ] = VIDEO_WMV
 mime_enum_lookup[ 'video/x-matroska' ] = VIDEO_MKV
+mime_enum_lookup[ 'video/ogg' ] = VIDEO_OGV
 mime_enum_lookup[ 'video/vnd.rn-realvideo' ] = VIDEO_REALMEDIA
 mime_enum_lookup[ 'application/vnd.rn-realmedia' ] = VIDEO_REALMEDIA
 mime_enum_lookup[ 'video/webm' ] = VIDEO_WEBM
@@ -648,6 +692,8 @@ mime_string_lookup[ AUDIO_M4A ] = 'm4a'
 mime_string_lookup[ AUDIO_MP3 ] = 'mp3'
 mime_string_lookup[ AUDIO_OGG ] = 'ogg'
 mime_string_lookup[ AUDIO_FLAC ] = 'flac'
+mime_string_lookup[ AUDIO_MKV ] = 'matroska audio'
+mime_string_lookup[ AUDIO_WAVE ] = 'wave'
 mime_string_lookup[ AUDIO_REALMEDIA ] = 'realaudio'
 mime_string_lookup[ AUDIO_TRUEAUDIO ] = 'tta'
 mime_string_lookup[ AUDIO_WMA ] = 'wma'
@@ -659,7 +705,8 @@ mime_string_lookup[ VIDEO_MOV ] = 'quicktime'
 mime_string_lookup[ VIDEO_MP4 ] = 'mp4'
 mime_string_lookup[ VIDEO_MPEG ] = 'mpeg'
 mime_string_lookup[ VIDEO_WMV ] = 'wmv'
-mime_string_lookup[ VIDEO_MKV ] = 'matroska'
+mime_string_lookup[ VIDEO_MKV ] = 'matroska video'
+mime_string_lookup[ VIDEO_OGV ] = 'ogv'
 mime_string_lookup[ VIDEO_REALMEDIA ] = 'realvideo'
 mime_string_lookup[ VIDEO_WEBM ] = 'webm'
 mime_string_lookup[ UNDETERMINED_WM ] = 'wma or wmv'
@@ -698,6 +745,8 @@ mime_mimetype_string_lookup[ AUDIO_M4A ] = 'audio/mp4'
 mime_mimetype_string_lookup[ AUDIO_MP3 ] = 'audio/mp3'
 mime_mimetype_string_lookup[ AUDIO_OGG ] = 'audio/ogg'
 mime_mimetype_string_lookup[ AUDIO_FLAC ] = 'audio/flac'
+mime_mimetype_string_lookup[ AUDIO_MKV ] = 'audio/x-matroska'
+mime_mimetype_string_lookup[ AUDIO_WAVE ] = 'audio/x-wav'
 mime_mimetype_string_lookup[ AUDIO_REALMEDIA ] = 'audio/vnd.rn-realaudio'
 mime_mimetype_string_lookup[ AUDIO_TRUEAUDIO ] = 'audio/x-tta'
 mime_mimetype_string_lookup[ AUDIO_WMA ] = 'audio/x-ms-wma'
@@ -710,6 +759,7 @@ mime_mimetype_string_lookup[ VIDEO_MP4 ] = 'video/mp4'
 mime_mimetype_string_lookup[ VIDEO_MPEG ] = 'video/mpeg'
 mime_mimetype_string_lookup[ VIDEO_WMV ] = 'video/x-ms-wmv'
 mime_mimetype_string_lookup[ VIDEO_MKV ] = 'video/x-matroska'
+mime_mimetype_string_lookup[ VIDEO_OGV ] = 'video/ogg'
 mime_mimetype_string_lookup[ VIDEO_REALMEDIA ] = 'video/vnd.rn-realvideo'
 mime_mimetype_string_lookup[ VIDEO_WEBM ] = 'video/webm'
 mime_mimetype_string_lookup[ UNDETERMINED_WM ] = 'audio/x-ms-wma or video/x-ms-wmv'
@@ -746,9 +796,11 @@ mime_ext_lookup[ APPLICATION_HYDRUS_UPDATE_CONTENT ] = ''
 mime_ext_lookup[ APPLICATION_HYDRUS_UPDATE_DEFINITIONS ] = ''
 mime_ext_lookup[ AUDIO_M4A ] = '.m4a'
 mime_ext_lookup[ AUDIO_MP3 ] = '.mp3'
+mime_ext_lookup[ AUDIO_MKV ] = '.mkv'
 mime_ext_lookup[ AUDIO_OGG ] = '.ogg'
 mime_ext_lookup[ AUDIO_REALMEDIA ] = '.ra'
 mime_ext_lookup[ AUDIO_FLAC ] = '.flac'
+mime_ext_lookup[ AUDIO_WAVE ] = '.wav'
 mime_ext_lookup[ AUDIO_TRUEAUDIO ] = '.tta'
 mime_ext_lookup[ AUDIO_WMA ] = '.wma'
 mime_ext_lookup[ TEXT_HTML ] = '.html'
@@ -760,6 +812,7 @@ mime_ext_lookup[ VIDEO_MP4 ] = '.mp4'
 mime_ext_lookup[ VIDEO_MPEG ] = '.mpeg'
 mime_ext_lookup[ VIDEO_WMV ] = '.wmv'
 mime_ext_lookup[ VIDEO_MKV ] = '.mkv'
+mime_ext_lookup[ VIDEO_OGV ] = '.ogv'
 mime_ext_lookup[ VIDEO_REALMEDIA ] = '.rm'
 mime_ext_lookup[ VIDEO_WEBM ] = '.webm'
 mime_ext_lookup[ APPLICATION_UNKNOWN ] = ''

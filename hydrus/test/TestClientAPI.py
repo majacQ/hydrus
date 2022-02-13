@@ -23,6 +23,8 @@ from hydrus.client import ClientAPI
 from hydrus.client import ClientManagers
 from hydrus.client import ClientSearch
 from hydrus.client import ClientServices
+from hydrus.client.importing import ClientImportFiles
+from hydrus.client.media import ClientMedia
 from hydrus.client.media import ClientMediaManagers
 from hydrus.client.media import ClientMediaResult
 from hydrus.client.metadata import ClientTags
@@ -401,6 +403,10 @@ class TestClientAPI( unittest.TestCase ):
         
         self.assertEqual( response.status, 200 )
         
+        #
+        
+        HG.test_controller.ClearWrites( 'content_updates' )
+        
         body_dict = { 'Hydrus-Client-API-Session-Key' : session_key_hex, 'hash' : hash_hex, 'service_names_to_tags' : { 'my tags' : [ 'test', 'test2' ] } }
         
         body = json.dumps( body_dict )
@@ -412,6 +418,55 @@ class TestClientAPI( unittest.TestCase ):
         data = response.read()
         
         self.assertEqual( response.status, 200 )
+        
+        [ ( ( service_keys_to_content_updates, ), kwargs ) ] = HG.test_controller.GetWrite( 'content_updates' )
+        
+        self.assertIn( CC.DEFAULT_LOCAL_TAG_SERVICE_KEY, service_keys_to_content_updates )
+        self.assertTrue( len( service_keys_to_content_updates[ CC.DEFAULT_LOCAL_TAG_SERVICE_KEY ] ) > 0 )
+        
+        #
+        
+        HG.test_controller.ClearWrites( 'content_updates' )
+        
+        body_dict = { 'Hydrus-Client-API-Session-Key' : session_key_hex, 'hash' : hash_hex, 'service_keys_to_tags' : { CC.DEFAULT_LOCAL_TAG_SERVICE_KEY.hex() : [ 'test', 'test2' ] } }
+        
+        body = json.dumps( body_dict )
+        
+        connection.request( 'POST', path, body = body, headers = headers )
+        
+        response = connection.getresponse()
+        
+        data = response.read()
+        
+        self.assertEqual( response.status, 200 )
+        
+        [ ( ( service_keys_to_content_updates, ), kwargs ) ] = HG.test_controller.GetWrite( 'content_updates' )
+        
+        self.assertIn( CC.DEFAULT_LOCAL_TAG_SERVICE_KEY, service_keys_to_content_updates )
+        self.assertTrue( len( service_keys_to_content_updates[ CC.DEFAULT_LOCAL_TAG_SERVICE_KEY ] ) > 0 )
+        
+        #
+        
+        HG.test_controller.ClearWrites( 'content_updates' )
+        
+        body_dict = { 'Hydrus-Client-API-Session-Key' : session_key_hex, 'hash' : hash_hex, 'service_keys_to_actions_to_tags' : { CC.DEFAULT_LOCAL_TAG_SERVICE_KEY.hex() : { str( HC.CONTENT_UPDATE_ADD ) : [ 'test', 'test2' ] } } }
+        
+        body = json.dumps( body_dict )
+        
+        connection.request( 'POST', path, body = body, headers = headers )
+        
+        response = connection.getresponse()
+        
+        data = response.read()
+        
+        self.assertEqual( response.status, 200 )
+        
+        [ ( ( service_keys_to_content_updates, ), kwargs ) ] = HG.test_controller.GetWrite( 'content_updates' )
+        
+        self.assertIn( CC.DEFAULT_LOCAL_TAG_SERVICE_KEY, service_keys_to_content_updates )
+        self.assertTrue( len( service_keys_to_content_updates[ CC.DEFAULT_LOCAL_TAG_SERVICE_KEY ] ) > 0 )
+        
+        #
         
         return set_up_permissions
         
@@ -559,7 +614,13 @@ class TestClientAPI( unittest.TestCase ):
         
         # fail
         
-        HG.test_controller.SetRead( 'hash_status', ( CC.STATUS_UNKNOWN, None, '' ) )
+        hash = bytes.fromhex( 'a593942cb7ea9ffcd8ccf2f0fa23c338e23bfecd9a3e508dfc0bcf07501ead08' )
+        
+        f = ClientImportFiles.FileImportStatus.STATICGetUnknownStatus()
+        
+        f.hash = hash
+        
+        HG.test_controller.SetRead( 'hash_status', f )
         
         headers = { 'Hydrus-Client-API-Access-Key' : access_key_hex, 'Content-Type' : HC.mime_mimetype_string_lookup[ HC.APPLICATION_OCTET_STREAM ] }
         
@@ -580,10 +641,19 @@ class TestClientAPI( unittest.TestCase ):
         response_json = json.loads( text )
         
         self.assertEqual( response_json[ 'status' ], CC.STATUS_ERROR )
-        self.assertEqual( response_json[ 'hash' ], 'a593942cb7ea9ffcd8ccf2f0fa23c338e23bfecd9a3e508dfc0bcf07501ead08' )
+        self.assertEqual( response_json[ 'hash' ], hash.hex() )
         self.assertIn( 'Traceback', response_json[ 'note' ] )
         
         # success as body
+        
+        hash = b'\xadm5\x99\xa6\xc4\x89\xa5u\xeb\x19\xc0&\xfa\xce\x97\xa9\xcdey\xe7G(\xb0\xce\x94\xa6\x01\xd22\xf3\xc3'
+        
+        f = ClientImportFiles.FileImportStatus.STATICGetUnknownStatus()
+        
+        f.hash = hash
+        f.note = 'test note'
+        
+        HG.test_controller.SetRead( 'hash_status', f )
         
         hydrus_png_path = os.path.join( HC.STATIC_DIR, 'hydrus.png' )
         
@@ -610,11 +680,18 @@ class TestClientAPI( unittest.TestCase ):
         
         response_json = json.loads( text )
         
-        expected_result = { 'status' : CC.STATUS_SUCCESSFUL_AND_NEW, 'hash' : 'ad6d3599a6c489a575eb19c026face97a9cd6579e74728b0ce94a601d232f3c3' , 'note' : 'test note' }
+        expected_result = { 'status' : CC.STATUS_SUCCESSFUL_AND_NEW, 'hash' : hash.hex() , 'note' : 'test note' }
         
         self.assertEqual( response_json, expected_result )
         
         # do hydrus png as path
+        
+        f = ClientImportFiles.FileImportStatus.STATICGetUnknownStatus()
+        
+        f.hash = hash
+        f.note = 'test note'
+        
+        HG.test_controller.SetRead( 'hash_status', f )
         
         headers = { 'Hydrus-Client-API-Access-Key' : access_key_hex, 'Content-Type' : HC.mime_mimetype_string_lookup[ HC.APPLICATION_JSON ] }
         
@@ -636,7 +713,7 @@ class TestClientAPI( unittest.TestCase ):
         
         response_json = json.loads( text )
         
-        expected_result = { 'status' : CC.STATUS_SUCCESSFUL_AND_NEW, 'hash' : 'ad6d3599a6c489a575eb19c026face97a9cd6579e74728b0ce94a601d232f3c3' , 'note' : 'test note' }
+        expected_result = { 'status' : CC.STATUS_SUCCESSFUL_AND_NEW, 'hash' : hash.hex() , 'note' : 'test note' }
         
         self.assertEqual( response_json, expected_result )
         
@@ -1112,7 +1189,7 @@ class TestClientAPI( unittest.TestCase ):
         
         hash = os.urandom( 32 )
         
-        url_file_statuses = [ ( CC.STATUS_SUCCESSFUL_BUT_REDUNDANT, hash, 'muh import phrase' ) ]
+        url_file_statuses = [ ClientImportFiles.FileImportStatus( CC.STATUS_SUCCESSFUL_BUT_REDUNDANT, hash, note = 'muh import phrase' ) ]
         json_url_file_statuses = [ { 'status' : CC.STATUS_SUCCESSFUL_BUT_REDUNDANT, 'hash' : hash.hex(), 'note' : 'muh import phrase' } ]
         
         HG.test_controller.SetRead( 'url_statuses', url_file_statuses )
@@ -1171,6 +1248,7 @@ class TestClientAPI( unittest.TestCase ):
         expected_answer[ 'url_type_string' ] = 'unknown url'
         expected_answer[ 'match_name' ] = 'unknown url'
         expected_answer[ 'can_parse' ] = False
+        expected_answer[ 'cannot_parse_reason' ] = 'unknown url class'
         
         self.assertEqual( d, expected_answer )
         
@@ -1322,6 +1400,34 @@ class TestClientAPI( unittest.TestCase ):
         HG.test_controller.ClearWrites( 'import_url_test' )
         
         request_dict = { 'url' : url, 'destination_page_name' : 'muh /tv/', 'show_destination_page' : True, 'filterable_tags' : [ 'filename:yo' ], 'service_names_to_additional_tags' : { 'my tags' : [ '/tv/ thread' ] } }
+        
+        request_body = json.dumps( request_dict )
+        
+        connection.request( 'POST', '/add_urls/add_url', body = request_body, headers = headers )
+        
+        response = connection.getresponse()
+        
+        data = response.read()
+        
+        text = str( data, 'utf-8' )
+        
+        self.assertEqual( response.status, 200 )
+        
+        response_json = json.loads( text )
+        
+        self.assertEqual( response_json[ 'human_result_text' ], '"https://8ch.net/tv/res/1846574.html" URL added successfully.' )
+        self.assertEqual( response_json[ 'normalised_url' ], 'https://8ch.net/tv/res/1846574.html' )
+        
+        filterable_tags = [ 'filename:yo' ]
+        additional_service_keys_to_tags = ClientTags.ServiceKeysToTags( { CC.DEFAULT_LOCAL_TAG_SERVICE_KEY : set( [ '/tv/ thread' ] ) } )
+        
+        self.assertEqual( HG.test_controller.GetWrite( 'import_url_test' ), [ ( ( url, set( filterable_tags ), additional_service_keys_to_tags, 'muh /tv/', None, True ), {} ) ] )
+        
+        # add tags with service key and name, and show destination page
+        
+        HG.test_controller.ClearWrites( 'import_url_test' )
+        
+        request_dict = { 'url' : url, 'destination_page_name' : 'muh /tv/', 'show_destination_page' : True, 'filterable_tags' : [ 'filename:yo' ], 'service_keys_to_additional_tags' : { CC.DEFAULT_LOCAL_TAG_SERVICE_KEY.hex() : [ '/tv/ thread' ] } }
         
         request_body = json.dumps( request_dict )
         
@@ -1680,6 +1786,30 @@ class TestClientAPI( unittest.TestCase ):
         
         self.assertFalse( HG.client_busy.locked() )
         
+        #
+        
+        expected_data = { 'hell forever' : 666 }
+        
+        HG.test_controller.SetRead( 'boned_stats', expected_data )
+        
+        path = '/manage_database/mr_bones'
+        
+        connection.request( 'GET', path, headers = headers )
+        
+        response = connection.getresponse()
+        
+        data = response.read()
+        
+        text = str( data, 'utf-8' )
+        
+        self.assertEqual( response.status, 200 )
+        
+        d = json.loads( text )
+        
+        boned_stats = d[ 'boned_stats' ]
+        
+        self.assertEqual( boned_stats, dict( expected_data ) )
+        
     
     def _test_manage_pages( self, connection, set_up_permissions ):
         
@@ -1738,9 +1868,7 @@ class TestClientAPI( unittest.TestCase ):
     
     def _test_search_files( self, connection, set_up_permissions ):
         
-        hash_ids = [ 1, 2, 3, 4, 5, 10 ]
-        
-        HG.test_controller.SetRead( 'file_query_ids', set( hash_ids ) )
+        hash_ids = [ 1, 2, 3, 4, 5, 10, 15, 16, 17, 18, 19, 20, 21, 25, 100, 101, 150 ]
         
         # search files failed tag permission
         
@@ -1751,6 +1879,10 @@ class TestClientAPI( unittest.TestCase ):
         headers = { 'Hydrus-Client-API-Access-Key' : access_key_hex }
         
         #
+        
+        sample_hash_ids = set( random.sample( hash_ids, 3 ) )
+        
+        HG.test_controller.SetRead( 'file_query_ids', set( sample_hash_ids ) )
         
         tags = []
         
@@ -1766,6 +1898,10 @@ class TestClientAPI( unittest.TestCase ):
         
         #
         
+        sample_hash_ids = set( random.sample( hash_ids, 3 ) )
+        
+        HG.test_controller.SetRead( 'file_query_ids', set( sample_hash_ids ) )
+        
         tags = [ 'kino' ]
         
         path = '/get_files/search_files?tags={}'.format( urllib.parse.quote( json.dumps( tags ) ) )
@@ -1779,6 +1915,12 @@ class TestClientAPI( unittest.TestCase ):
         self.assertEqual( response.status, 403 )
         
         # search files
+        
+        HG.test_controller.ClearReads( 'file_query_ids' )
+        
+        sample_hash_ids = set( random.sample( hash_ids, 3 ) )
+        
+        HG.test_controller.SetRead( 'file_query_ids', set( sample_hash_ids ) )
         
         tags = [ 'kino', 'green' ]
         
@@ -1796,9 +1938,293 @@ class TestClientAPI( unittest.TestCase ):
         
         d = json.loads( text )
         
-        expected_answer = { 'file_ids' : hash_ids }
+        expected_answer = { 'file_ids' : list( sample_hash_ids ) }
         
         self.assertEqual( d, expected_answer )
+        
+        [ ( args, kwargs ) ] = HG.test_controller.GetRead( 'file_query_ids' )
+        
+        ( file_search_context, ) = args
+        
+        self.assertEqual( file_search_context.GetLocationContext().current_service_keys, { CC.LOCAL_FILE_SERVICE_KEY } )
+        self.assertEqual( file_search_context.GetTagSearchContext().service_key, CC.COMBINED_TAG_SERVICE_KEY )
+        self.assertEqual( set( file_search_context.GetPredicates() ), { ClientSearch.Predicate( ClientSearch.PREDICATE_TYPE_TAG, tag ) for tag in tags } )
+        
+        self.assertIn( 'sort_by', kwargs )
+        
+        sort_by = kwargs[ 'sort_by' ]
+        
+        self.assertEqual( sort_by.sort_type, ( 'system', CC.SORT_FILES_BY_IMPORT_TIME ) )
+        self.assertEqual( sort_by.sort_order, CC.SORT_DESC )
+        
+        self.assertIn( 'apply_implicit_limit', kwargs )
+        
+        self.assertEqual( kwargs[ 'apply_implicit_limit' ], False )
+        
+        # search files and get hashes
+        
+        HG.test_controller.ClearReads( 'file_query_ids' )
+        
+        sample_hash_ids = set( random.sample( hash_ids, 3 ) )
+        
+        hash_ids_to_hashes = { hash_id : os.urandom( 32 ) for hash_id in sample_hash_ids }
+        
+        HG.test_controller.SetRead( 'file_query_ids', set( sample_hash_ids ) )
+        
+        HG.test_controller.SetRead( 'hash_ids_to_hashes', hash_ids_to_hashes )
+        
+        tags = [ 'kino', 'green' ]
+        
+        path = '/get_files/search_files?tags={}&return_hashes=true'.format( urllib.parse.quote( json.dumps( tags ) ) )
+        
+        connection.request( 'GET', path, headers = headers )
+        
+        response = connection.getresponse()
+        
+        data = response.read()
+        
+        text = str( data, 'utf-8' )
+        
+        self.assertEqual( response.status, 200 )
+        
+        d = json.loads( text )
+        
+        expected_hashes_set = { hash.hex() for hash in hash_ids_to_hashes.values() }
+        
+        self.assertEqual( set( d[ 'hashes' ] ), expected_hashes_set )
+        
+        [ ( args, kwargs ) ] = HG.test_controller.GetRead( 'file_query_ids' )
+        
+        ( file_search_context, ) = args
+        
+        self.assertEqual( file_search_context.GetLocationContext().current_service_keys, { CC.LOCAL_FILE_SERVICE_KEY } )
+        self.assertEqual( file_search_context.GetTagSearchContext().service_key, CC.COMBINED_TAG_SERVICE_KEY )
+        self.assertEqual( set( file_search_context.GetPredicates() ), { ClientSearch.Predicate( ClientSearch.PREDICATE_TYPE_TAG, tag ) for tag in tags } )
+        
+        self.assertIn( 'sort_by', kwargs )
+        
+        sort_by = kwargs[ 'sort_by' ]
+        
+        self.assertEqual( sort_by.sort_type, ( 'system', CC.SORT_FILES_BY_IMPORT_TIME ) )
+        self.assertEqual( sort_by.sort_order, CC.SORT_DESC )
+        
+        self.assertIn( 'apply_implicit_limit', kwargs )
+        
+        self.assertEqual( kwargs[ 'apply_implicit_limit' ], False )
+        
+        [ ( args, kwargs ) ] = HG.test_controller.GetRead( 'hash_ids_to_hashes' )
+        
+        hash_ids = kwargs[ 'hash_ids' ]
+        
+        self.assertEqual( set( hash_ids ), sample_hash_ids )
+        
+        # sort
+        
+        # this just tests if it parses, we don't have a full test for read params yet
+        
+        HG.test_controller.ClearReads( 'file_query_ids' )
+        
+        sample_hash_ids = set( random.sample( hash_ids, 3 ) )
+        
+        HG.test_controller.SetRead( 'file_query_ids', set( sample_hash_ids ) )
+        
+        tags = [ 'kino', 'green' ]
+        
+        path = '/get_files/search_files?tags={}&file_sort_type={}'.format( urllib.parse.quote( json.dumps( tags ) ), CC.SORT_FILES_BY_FRAMERATE )
+        
+        connection.request( 'GET', path, headers = headers )
+        
+        response = connection.getresponse()
+        
+        data = response.read()
+        
+        text = str( data, 'utf-8' )
+        
+        self.assertEqual( response.status, 200 )
+        
+        [ ( args, kwargs ) ] = HG.test_controller.GetRead( 'file_query_ids' )
+        
+        ( file_search_context, ) = args
+        
+        self.assertEqual( file_search_context.GetLocationContext().current_service_keys, { CC.LOCAL_FILE_SERVICE_KEY } )
+        self.assertEqual( file_search_context.GetTagSearchContext().service_key, CC.COMBINED_TAG_SERVICE_KEY )
+        self.assertEqual( set( file_search_context.GetPredicates() ), { ClientSearch.Predicate( ClientSearch.PREDICATE_TYPE_TAG, tag ) for tag in tags } )
+        
+        self.assertIn( 'sort_by', kwargs )
+        
+        sort_by = kwargs[ 'sort_by' ]
+        
+        self.assertEqual( sort_by.sort_type, ( 'system', CC.SORT_FILES_BY_FRAMERATE ) )
+        self.assertEqual( sort_by.sort_order, CC.SORT_DESC )
+        
+        self.assertIn( 'apply_implicit_limit', kwargs )
+        
+        self.assertEqual( kwargs[ 'apply_implicit_limit' ], False )
+        
+        # sort
+        
+        HG.test_controller.ClearReads( 'file_query_ids' )
+        
+        sample_hash_ids = set( random.sample( hash_ids, 3 ) )
+        
+        HG.test_controller.SetRead( 'file_query_ids', set( sample_hash_ids ) )
+        
+        tags = [ 'kino', 'green' ]
+        
+        path = '/get_files/search_files?tags={}&file_sort_type={}&file_sort_asc={}'.format( urllib.parse.quote( json.dumps( tags ) ), CC.SORT_FILES_BY_FRAMERATE, 'true' )
+        
+        connection.request( 'GET', path, headers = headers )
+        
+        response = connection.getresponse()
+        
+        data = response.read()
+        
+        text = str( data, 'utf-8' )
+        
+        self.assertEqual( response.status, 200 )
+        
+        [ ( args, kwargs ) ] = HG.test_controller.GetRead( 'file_query_ids' )
+        
+        ( file_search_context, ) = args
+        
+        self.assertEqual( file_search_context.GetLocationContext().current_service_keys, { CC.LOCAL_FILE_SERVICE_KEY } )
+        self.assertEqual( file_search_context.GetTagSearchContext().service_key, CC.COMBINED_TAG_SERVICE_KEY )
+        self.assertEqual( set( file_search_context.GetPredicates() ), { ClientSearch.Predicate( ClientSearch.PREDICATE_TYPE_TAG, tag ) for tag in tags } )
+        
+        self.assertIn( 'sort_by', kwargs )
+        
+        sort_by = kwargs[ 'sort_by' ]
+        
+        self.assertEqual( sort_by.sort_type, ( 'system', CC.SORT_FILES_BY_FRAMERATE ) )
+        self.assertEqual( sort_by.sort_order, CC.SORT_ASC )
+        
+        self.assertIn( 'apply_implicit_limit', kwargs )
+        
+        self.assertEqual( kwargs[ 'apply_implicit_limit' ], False )
+        
+        # file domain
+        
+        HG.test_controller.ClearReads( 'file_query_ids' )
+        
+        sample_hash_ids = set( random.sample( hash_ids, 3 ) )
+        
+        HG.test_controller.SetRead( 'file_query_ids', set( sample_hash_ids ) )
+        
+        tags = [ 'kino', 'green' ]
+        
+        path = '/get_files/search_files?tags={}&file_sort_type={}&file_sort_asc={}&file_service_name={}'.format(
+            urllib.parse.quote( json.dumps( tags ) ),
+            CC.SORT_FILES_BY_FRAMERATE,
+            'true',
+            'trash'
+        )
+        
+        connection.request( 'GET', path, headers = headers )
+        
+        response = connection.getresponse()
+        
+        data = response.read()
+        
+        text = str( data, 'utf-8' )
+        
+        self.assertEqual( response.status, 200 )
+        
+        [ ( args, kwargs ) ] = HG.test_controller.GetRead( 'file_query_ids' )
+        
+        ( file_search_context, ) = args
+        
+        self.assertEqual( file_search_context.GetLocationContext().current_service_keys, { CC.TRASH_SERVICE_KEY } )
+        self.assertEqual( file_search_context.GetTagSearchContext().service_key, CC.COMBINED_TAG_SERVICE_KEY )
+        self.assertEqual( set( file_search_context.GetPredicates() ), { ClientSearch.Predicate( ClientSearch.PREDICATE_TYPE_TAG, tag ) for tag in tags } )
+        
+        self.assertIn( 'sort_by', kwargs )
+        
+        sort_by = kwargs[ 'sort_by' ]
+        
+        self.assertEqual( sort_by.sort_type, ( 'system', CC.SORT_FILES_BY_FRAMERATE ) )
+        self.assertEqual( sort_by.sort_order, CC.SORT_ASC )
+        
+        self.assertIn( 'apply_implicit_limit', kwargs )
+        
+        self.assertEqual( kwargs[ 'apply_implicit_limit' ], False )
+        
+        # file and tag domain
+        
+        HG.test_controller.ClearReads( 'file_query_ids' )
+        
+        sample_hash_ids = set( random.sample( hash_ids, 3 ) )
+        
+        HG.test_controller.SetRead( 'file_query_ids', set( sample_hash_ids ) )
+        
+        tags = [ 'kino', 'green' ]
+        
+        path = '/get_files/search_files?tags={}&file_sort_type={}&file_sort_asc={}&file_service_key={}&tag_service_name={}'.format(
+            urllib.parse.quote( json.dumps( tags ) ),
+            CC.SORT_FILES_BY_FRAMERATE,
+            'true',
+            CC.TRASH_SERVICE_KEY.hex(),
+            'all%20known%20tags'
+        )
+        
+        connection.request( 'GET', path, headers = headers )
+        
+        response = connection.getresponse()
+        
+        data = response.read()
+        
+        text = str( data, 'utf-8' )
+        
+        self.assertEqual( response.status, 200 )
+        
+        [ ( args, kwargs ) ] = HG.test_controller.GetRead( 'file_query_ids' )
+        
+        ( file_search_context, ) = args
+        
+        self.assertEqual( file_search_context.GetLocationContext().current_service_keys, { CC.TRASH_SERVICE_KEY } )
+        self.assertEqual( file_search_context.GetTagSearchContext().service_key, CC.COMBINED_TAG_SERVICE_KEY )
+        self.assertEqual( set( file_search_context.GetPredicates() ), { ClientSearch.Predicate( ClientSearch.PREDICATE_TYPE_TAG, tag ) for tag in tags } )
+        
+        self.assertIn( 'sort_by', kwargs )
+        
+        sort_by = kwargs[ 'sort_by' ]
+        
+        self.assertEqual( sort_by.sort_type, ( 'system', CC.SORT_FILES_BY_FRAMERATE ) )
+        self.assertEqual( sort_by.sort_order, CC.SORT_ASC )
+        
+        self.assertIn( 'apply_implicit_limit', kwargs )
+        
+        self.assertEqual( kwargs[ 'apply_implicit_limit' ], False )
+        
+        # file and tag domain
+        
+        # this just tests if it parses, we don't have a full test for read params yet
+        
+        sample_hash_ids = set( random.sample( hash_ids, 3 ) )
+        
+        HG.test_controller.SetRead( 'file_query_ids', set( sample_hash_ids ) )
+        
+        tags = [ 'kino', 'green' ]
+        
+        path = '/get_files/search_files?tags={}&file_sort_type={}&file_sort_asc={}&file_service_key={}&tag_service_key={}'.format(
+            urllib.parse.quote( json.dumps( tags ) ),
+            CC.SORT_FILES_BY_FRAMERATE,
+            'true',
+            CC.COMBINED_FILE_SERVICE_KEY.hex(),
+            CC.COMBINED_TAG_SERVICE_KEY.hex()
+        )
+        
+        connection.request( 'GET', path, headers = headers )
+        
+        response = connection.getresponse()
+        
+        data = response.read()
+        
+        text = str( data, 'utf-8' )
+        
+        self.assertEqual( response.status, 400 )
+        
+    
+    def _test_search_files_predicate_parsing( self, connection, set_up_permissions ):
         
         # some file search param parsing
         
@@ -1888,142 +2314,235 @@ class TestClientAPI( unittest.TestCase ):
         
         self.assertEqual( set( predicates ), set( expected_predicates ) )
         
+        #
+        
+        pretend_request = PretendRequest()
+        
+        pretend_request.parsed_request_args = { 'tags' : [ 'green', 'system:archive' ] }
+        pretend_request.client_api_permissions = set_up_permissions[ 'search_green_files' ]
+        
+        predicates = ClientLocalServerResources.ParseClientAPISearchPredicates( pretend_request )
+        
+        expected_predicates = []
+        
+        expected_predicates.append( ClientSearch.Predicate( predicate_type = ClientSearch.PREDICATE_TYPE_TAG, value = 'green' ) )
+        expected_predicates.append( ClientSearch.Predicate( predicate_type = ClientSearch.PREDICATE_TYPE_SYSTEM_ARCHIVE ) )
+        
+        self.assertEqual( set( predicates ), set( expected_predicates ) )
+        
+        #
+        
+        pretend_request = PretendRequest()
+        
+        pretend_request.parsed_request_args = { 'tags' : [ 'green', [ 'red', 'blue' ], 'system:archive' ] }
+        pretend_request.client_api_permissions = set_up_permissions[ 'search_green_files' ]
+        
+        predicates = ClientLocalServerResources.ParseClientAPISearchPredicates( pretend_request )
+        
+        expected_predicates = []
+        
+        expected_predicates.append( ClientSearch.Predicate( predicate_type = ClientSearch.PREDICATE_TYPE_TAG, value = 'green' ) )
+        
+        expected_predicates.append(
+            ClientSearch.Predicate(
+                predicate_type = ClientSearch.PREDICATE_TYPE_OR_CONTAINER,
+                value = [
+                    ClientSearch.Predicate( predicate_type = ClientSearch.PREDICATE_TYPE_TAG, value = 'red' ),
+                    ClientSearch.Predicate( predicate_type = ClientSearch.PREDICATE_TYPE_TAG, value = 'blue' )
+                ]
+            )
+        )
+        
+        expected_predicates.append( ClientSearch.Predicate( predicate_type = ClientSearch.PREDICATE_TYPE_SYSTEM_ARCHIVE ) )
+        
+        self.assertEqual( { pred for pred in predicates if pred.GetType() != ClientSearch.PREDICATE_TYPE_OR_CONTAINER }, { pred for pred in expected_predicates if pred.GetType() != ClientSearch.PREDICATE_TYPE_OR_CONTAINER } )
+        self.assertEqual( { frozenset( pred.GetValue() ) for pred in predicates if pred.GetType() == ClientSearch.PREDICATE_TYPE_OR_CONTAINER }, { frozenset( pred.GetValue() ) for pred in expected_predicates if pred.GetType() == ClientSearch.PREDICATE_TYPE_OR_CONTAINER } )
+        
+    
+    def _test_file_metadata( self, connection, set_up_permissions ):
+        
         # test file metadata
         
-        api_permissions = set_up_permissions[ 'search_green_files' ]
-        
-        access_key_hex = api_permissions.GetAccessKey().hex()
-        
-        headers = { 'Hydrus-Client-API-Access-Key' : access_key_hex }
-        
-        file_ids_to_hashes = { 1 : bytes.fromhex( 'a' * 64 ), 2 : bytes.fromhex( 'b' * 64 ), 3 : bytes.fromhex( 'c' * 64 ) }
-        
-        metadata = []
-        
-        for ( file_id, hash ) in file_ids_to_hashes.items():
+        for hide_service_names_tags in ( False, True ):
             
-            metadata_row = { 'file_id' : file_id, 'hash' : hash.hex() }
+            api_permissions = set_up_permissions[ 'search_green_files' ]
             
-            metadata.append( metadata_row )
+            access_key_hex = api_permissions.GetAccessKey().hex()
             
-        
-        expected_identifier_result = { 'metadata' : metadata }
-        
-        media_results = []
-        
-        urls = { "https://gelbooru.com/index.php?page=post&s=view&id=4841557", "https://img2.gelbooru.com//images/80/c8/80c8646b4a49395fb36c805f316c49a9.jpg" }
-        
-        sorted_urls = sorted( urls )
-        
-        for ( file_id, hash ) in file_ids_to_hashes.items():
+            headers = { 'Hydrus-Client-API-Access-Key' : access_key_hex }
             
-            size = random.randint( 8192, 20 * 1048576 )
-            mime = random.choice( [ HC.IMAGE_JPEG, HC.VIDEO_WEBM, HC.APPLICATION_PDF ] )
-            width = random.randint( 200, 4096 )
-            height = random.randint( 200, 4096 )
-            duration = random.choice( [ 220, 16.66667, None ] )
-            has_audio = random.choice( [ True, False ] )
+            file_ids_to_hashes = { 1 : bytes.fromhex( 'a' * 64 ), 2 : bytes.fromhex( 'b' * 64 ), 3 : bytes.fromhex( 'c' * 64 ) }
             
-            file_info_manager = ClientMediaManagers.FileInfoManager( file_id, hash, size = size, mime = mime, width = width, height = height, duration = duration, has_audio = has_audio )
+            metadata = []
             
-            service_keys_to_statuses_to_tags = { CC.DEFAULT_LOCAL_TAG_SERVICE_KEY : { HC.CONTENT_STATUS_CURRENT : [ 'blue_eyes', 'blonde_hair' ], HC.CONTENT_STATUS_PENDING : [ 'bodysuit' ] } }
-            service_keys_to_statuses_to_display_tags = { CC.DEFAULT_LOCAL_TAG_SERVICE_KEY : { HC.CONTENT_STATUS_CURRENT : [ 'blue eyes', 'blonde hair' ], HC.CONTENT_STATUS_PENDING : [ 'bodysuit', 'clothing' ] } }
-            
-            tags_manager = ClientMediaManagers.TagsManager( service_keys_to_statuses_to_tags, service_keys_to_statuses_to_display_tags )
-            
-            locations_manager = ClientMediaManagers.LocationsManager( dict(), dict(), set(), set(), inbox = False, urls = urls )
-            ratings_manager = ClientMediaManagers.RatingsManager( {} )
-            notes_manager = ClientMediaManagers.NotesManager( {} )
-            file_viewing_stats_manager = ClientMediaManagers.FileViewingStatsManager( 0, 0, 0, 0 )
-            
-            media_result = ClientMediaResult.MediaResult( file_info_manager, tags_manager, locations_manager, ratings_manager, notes_manager, file_viewing_stats_manager )
-            
-            media_results.append( media_result )
-            
-        
-        metadata = []
-        detailed_known_urls_metadata = []
-        
-        services_manager = HG.client_controller.services_manager
-        
-        service_keys_to_names = {}
-        
-        for media_result in media_results:
-            
-            metadata_row = {}
-            
-            file_info_manager = media_result.GetFileInfoManager()
-            
-            metadata_row[ 'file_id' ] = file_info_manager.hash_id
-            metadata_row[ 'hash' ] = file_info_manager.hash.hex()
-            metadata_row[ 'size' ] = file_info_manager.size
-            metadata_row[ 'mime' ] = HC.mime_mimetype_string_lookup[ file_info_manager.mime ]
-            metadata_row[ 'ext' ] = HC.mime_ext_lookup[ file_info_manager.mime ]
-            metadata_row[ 'width' ] = file_info_manager.width
-            metadata_row[ 'height' ] = file_info_manager.height
-            metadata_row[ 'duration' ] = file_info_manager.duration
-            metadata_row[ 'has_audio' ] = file_info_manager.has_audio
-            metadata_row[ 'num_frames' ] = file_info_manager.num_frames
-            metadata_row[ 'num_words' ] = file_info_manager.num_words
-            
-            metadata_row[ 'is_inbox' ] = False
-            metadata_row[ 'is_local' ] = False
-            metadata_row[ 'is_trashed' ] = False
-            
-            metadata_row[ 'known_urls' ] = list( sorted_urls )
-            
-            tags_manager = media_result.GetTagsManager()
-            
-            service_names_to_statuses_to_tags = {}
-            
-            service_keys_to_statuses_to_tags = tags_manager.GetServiceKeysToStatusesToTags( ClientTags.TAG_DISPLAY_STORAGE )
-            
-            for ( service_key, statuses_to_tags ) in service_keys_to_statuses_to_tags.items():
+            for ( file_id, hash ) in file_ids_to_hashes.items():
                 
-                if service_key not in service_keys_to_names:
+                metadata_row = { 'file_id' : file_id, 'hash' : hash.hex() }
+                
+                metadata.append( metadata_row )
+                
+            
+            expected_identifier_result = { 'metadata' : metadata }
+            
+            media_results = []
+            
+            urls = { "https://gelbooru.com/index.php?page=post&s=view&id=4841557", "https://img2.gelbooru.com//images/80/c8/80c8646b4a49395fb36c805f316c49a9.jpg" }
+            
+            sorted_urls = sorted( urls )
+            
+            random_file_service_hex_current = HydrusData.GenerateKey()
+            random_file_service_hex_deleted = HydrusData.GenerateKey()
+            
+            current_import_timestamp = 500
+            deleted_import_timestamp = 300
+            deleted_deleted_timestamp = 450
+            file_modified_timestamp = 20
+            
+            for ( file_id, hash ) in file_ids_to_hashes.items():
+                
+                size = random.randint( 8192, 20 * 1048576 )
+                mime = random.choice( [ HC.IMAGE_JPEG, HC.VIDEO_WEBM, HC.APPLICATION_PDF ] )
+                width = random.randint( 200, 4096 )
+                height = random.randint( 200, 4096 )
+                duration = random.choice( [ 220, 16.66667, None ] )
+                has_audio = random.choice( [ True, False ] )
+                
+                file_info_manager = ClientMediaManagers.FileInfoManager( file_id, hash, size = size, mime = mime, width = width, height = height, duration = duration, has_audio = has_audio )
+                
+                service_keys_to_statuses_to_tags = { CC.DEFAULT_LOCAL_TAG_SERVICE_KEY : { HC.CONTENT_STATUS_CURRENT : [ 'blue_eyes', 'blonde_hair' ], HC.CONTENT_STATUS_PENDING : [ 'bodysuit' ] } }
+                service_keys_to_statuses_to_display_tags = { CC.DEFAULT_LOCAL_TAG_SERVICE_KEY : { HC.CONTENT_STATUS_CURRENT : [ 'blue eyes', 'blonde hair' ], HC.CONTENT_STATUS_PENDING : [ 'bodysuit', 'clothing' ] } }
+                
+                tags_manager = ClientMediaManagers.TagsManager( service_keys_to_statuses_to_tags, service_keys_to_statuses_to_display_tags )
+                
+                locations_manager = ClientMediaManagers.LocationsManager( { random_file_service_hex_current : current_import_timestamp }, { random_file_service_hex_deleted : ( deleted_deleted_timestamp, deleted_import_timestamp ) }, set(), set(), inbox = False, urls = urls, file_modified_timestamp = file_modified_timestamp )
+                ratings_manager = ClientMediaManagers.RatingsManager( {} )
+                notes_manager = ClientMediaManagers.NotesManager( {} )
+                file_viewing_stats_manager = ClientMediaManagers.FileViewingStatsManager.STATICGenerateEmptyManager()
+                
+                media_result = ClientMediaResult.MediaResult( file_info_manager, tags_manager, locations_manager, ratings_manager, notes_manager, file_viewing_stats_manager )
+                
+                media_results.append( media_result )
+                
+            
+            hide_service_names_tags_metadata = []
+            metadata = []
+            detailed_known_urls_metadata = []
+            
+            services_manager = HG.client_controller.services_manager
+            
+            service_keys_to_names = {}
+            
+            for media_result in media_results:
+                
+                file_info_manager = media_result.GetFileInfoManager()
+                
+                metadata_row = {
+                    'file_id' : file_info_manager.hash_id,
+                    'hash' : file_info_manager.hash.hex(),
+                    'size' : file_info_manager.size,
+                    'mime' : HC.mime_mimetype_string_lookup[ file_info_manager.mime ],
+                    'ext' : HC.mime_ext_lookup[ file_info_manager.mime ],
+                    'width' : file_info_manager.width,
+                    'height' : file_info_manager.height,
+                    'duration' : file_info_manager.duration,
+                    'has_audio' : file_info_manager.has_audio,
+                    'num_frames' : file_info_manager.num_frames,
+                    'num_words' : file_info_manager.num_words,
+                    'file_services' : {
+                        'current' : {
+                            random_file_service_hex_current.hex() : {
+                                'time_imported' : current_import_timestamp
+                            }
+                        },
+                        'deleted' : {
+                            random_file_service_hex_deleted.hex() : {
+                                'time_deleted' : deleted_deleted_timestamp,
+                                'time_imported' : deleted_import_timestamp
+                            }
+                        }
+                    },
+                    'time_modified' : file_modified_timestamp,
+                    'is_inbox' : False,
+                    'is_local' : False,
+                    'is_trashed' : False,
+                    'known_urls' : list( sorted_urls )
+                }
+                
+                tags_manager = media_result.GetTagsManager()
+                
+                service_names_to_statuses_to_tags = {}
+                api_service_keys_to_statuses_to_tags = {}
+                
+                service_keys_to_statuses_to_tags = tags_manager.GetServiceKeysToStatusesToTags( ClientTags.TAG_DISPLAY_STORAGE )
+                
+                for ( service_key, statuses_to_tags ) in service_keys_to_statuses_to_tags.items():
                     
-                    service_keys_to_names[ service_key ] = services_manager.GetName( service_key )
+                    if service_key not in service_keys_to_names:
+                        
+                        service_keys_to_names[ service_key ] = services_manager.GetName( service_key )
+                        
+                    
+                    s = { str( status ) : sorted( tags, key = HydrusTags.ConvertTagToSortable ) for ( status, tags ) in statuses_to_tags.items() if len( tags ) > 0 }
+                    
+                    if len( s ) > 0:
+                        
+                        service_name = service_keys_to_names[ service_key ]
+                        
+                        service_names_to_statuses_to_tags[ service_name ] = s
+                        api_service_keys_to_statuses_to_tags[ service_key.hex() ] = s
+                        
                     
                 
-                service_name = service_keys_to_names[ service_key ]
+                metadata_row[ 'service_keys_to_statuses_to_tags' ] = api_service_keys_to_statuses_to_tags
                 
-                service_names_to_statuses_to_tags[ service_name ] = { str( status ) : list( tags ) for ( status, tags ) in statuses_to_tags.items() }
+                service_names_to_statuses_to_display_tags = {}
+                service_keys_to_statuses_to_display_tags = {}
                 
-            
-            metadata_row[ 'service_names_to_statuses_to_tags' ] = service_names_to_statuses_to_tags
-            
-            service_names_to_statuses_to_tags = {}
-            
-            service_keys_to_statuses_to_tags = tags_manager.GetServiceKeysToStatusesToTags( ClientTags.TAG_DISPLAY_ACTUAL )
-            
-            for ( service_key, statuses_to_tags ) in service_keys_to_statuses_to_tags.items():
+                service_keys_to_statuses_to_tags = tags_manager.GetServiceKeysToStatusesToTags( ClientTags.TAG_DISPLAY_ACTUAL )
                 
-                if service_key not in service_keys_to_names:
+                for ( service_key, statuses_to_tags ) in service_keys_to_statuses_to_tags.items():
                     
-                    service_keys_to_names[ service_key ] = services_manager.GetName( service_key )
+                    if service_key not in service_keys_to_names:
+                        
+                        service_keys_to_names[ service_key ] = services_manager.GetName( service_key )
+                        
+                    
+                    s = { str( status ) : sorted( tags, key = HydrusTags.ConvertTagToSortable ) for ( status, tags ) in statuses_to_tags.items() if len( tags ) > 0 }
+                    
+                    if len( s ) > 0:
+                        
+                        service_name = service_keys_to_names[ service_key ]
+                        
+                        service_names_to_statuses_to_display_tags[ service_name ] = s
+                        service_keys_to_statuses_to_display_tags[ service_key.hex() ] = s
+                        
                     
                 
-                service_name = service_keys_to_names[ service_key ]
+                metadata_row[ 'service_keys_to_statuses_to_display_tags' ] = service_keys_to_statuses_to_display_tags
                 
-                service_names_to_statuses_to_tags[ service_name ] = { str( status ) : list( tags ) for ( status, tags ) in statuses_to_tags.items() }
+                hide_service_names_tags_metadata.append( metadata_row )
+                
+                metadata_row = dict( metadata_row )
+                
+                metadata_row[ 'service_names_to_statuses_to_tags' ] = service_names_to_statuses_to_tags
+                metadata_row[ 'service_names_to_statuses_to_display_tags' ] = service_names_to_statuses_to_display_tags
+                
+                metadata.append( metadata_row )
+                
+                detailed_known_urls_metadata_row = dict( metadata_row )
+                
+                detailed_known_urls_metadata_row[ 'detailed_known_urls' ] = [
+                    {'normalised_url': 'https://gelbooru.com/index.php?id=4841557&page=post&s=view', 'url_type': 0, 'url_type_string': 'post url', 'match_name': 'gelbooru file page', 'can_parse': True},
+                    {'normalised_url': 'https://img2.gelbooru.com//images/80/c8/80c8646b4a49395fb36c805f316c49a9.jpg', 'url_type': 5, 'url_type_string': 'unknown url', 'match_name': 'unknown url', 'can_parse': False, 'cannot_parse_reason' : 'unknown url class'}
+                ]
+                
+                detailed_known_urls_metadata.append( detailed_known_urls_metadata_row )
                 
             
-            metadata_row[ 'service_names_to_statuses_to_display_tags' ] = service_names_to_statuses_to_tags
+            expected_hide_service_names_tags_metadata_result = { 'metadata' : hide_service_names_tags_metadata }
+            expected_metadata_result = { 'metadata' : metadata }
+            expected_detailed_known_urls_metadata_result = { 'metadata' : detailed_known_urls_metadata }
             
-            metadata.append( metadata_row )
-            
-            detailed_known_urls_metadata_row = dict( metadata_row )
-            
-            detailed_known_urls_metadata_row[ 'detailed_known_urls' ] = [
-                {'normalised_url': 'https://gelbooru.com/index.php?id=4841557&page=post&s=view', 'url_type': 0, 'url_type_string': 'post url', 'match_name': 'gelbooru file page', 'can_parse': True},
-                {'normalised_url': 'https://img2.gelbooru.com//images/80/c8/80c8646b4a49395fb36c805f316c49a9.jpg', 'url_type': 5, 'url_type_string': 'unknown url', 'match_name': 'unknown url', 'can_parse': False}
-            ]
-            
-            detailed_known_urls_metadata.append( detailed_known_urls_metadata_row )
-            
-        
-        expected_metadata_result = { 'metadata' : metadata }
-        expected_detailed_known_urls_metadata_result = { 'metadata' : detailed_known_urls_metadata }
         
         HG.test_controller.SetRead( 'hash_ids_to_hashes', file_ids_to_hashes )
         HG.test_controller.SetRead( 'media_results', media_results )
@@ -2135,6 +2654,36 @@ class TestClientAPI( unittest.TestCase ):
         
         self.assertEqual( d, expected_metadata_result )
         
+        # fails on borked hashes
+        
+        path = '/get_files/file_metadata?hashes={}'.format( urllib.parse.quote( json.dumps( [ 'deadbeef' ] ) ) )
+        
+        connection.request( 'GET', path, headers = headers )
+        
+        response = connection.getresponse()
+        
+        data = response.read()
+        
+        self.assertEqual( response.status, 400 )
+        
+        # hide service names to tags
+        
+        path = '/get_files/file_metadata?hashes={}&hide_service_names_tags=true'.format( urllib.parse.quote( json.dumps( [ hash.hex() for hash in file_ids_to_hashes.values() ] ) ) )
+        
+        connection.request( 'GET', path, headers = headers )
+        
+        response = connection.getresponse()
+        
+        data = response.read()
+        
+        text = str( data, 'utf-8' )
+        
+        self.assertEqual( response.status, 200 )
+        
+        d = json.loads( text )
+        
+        self.assertEqual( d, expected_hide_service_names_tags_metadata_result )
+        
         # metadata from hashes with detailed url info
         
         path = '/get_files/file_metadata?hashes={}&detailed_url_information=true'.format( urllib.parse.quote( json.dumps( [ hash.hex() for hash in file_ids_to_hashes.values() ] ) ) )
@@ -2153,8 +2702,35 @@ class TestClientAPI( unittest.TestCase ):
         
         self.assertEqual( d, expected_detailed_known_urls_metadata_result )
         
+        # failure on missing file_ids
+        
+        HG.test_controller.SetRead( 'media_results_from_ids', HydrusExceptions.DataMissing( 'test missing' ) )
+        
+        api_permissions = set_up_permissions[ 'everything' ]
+        
+        access_key_hex = api_permissions.GetAccessKey().hex()
+        
+        headers = { 'Hydrus-Client-API-Access-Key' : access_key_hex }
+        
+        path = '/get_files/file_metadata?file_ids={}'.format( urllib.parse.quote( json.dumps( [ 123456 ] ) ) )
+        
+        connection.request( 'GET', path, headers = headers )
+        
+        response = connection.getresponse()
+        
+        data = response.read()
+        
+        text = str( data, 'utf-8' )
+        
+        self.assertEqual( response.status, 404 )
+        self.assertIn( 'test missing', text )
+        
+    
+    def _test_get_files( self, connection, set_up_permissions ):
+        
         # files and thumbs
         
+        file_id = 1
         hash = b'\xadm5\x99\xa6\xc4\x89\xa5u\xeb\x19\xc0&\xfa\xce\x97\xa9\xcdey\xe7G(\xb0\xce\x94\xa6\x01\xd22\xf3\xc3'
         hash_hex = hash.hex()
         
@@ -2174,7 +2750,7 @@ class TestClientAPI( unittest.TestCase ):
         locations_manager = ClientMediaManagers.LocationsManager( dict(), dict(), set(), set() )
         ratings_manager = ClientMediaManagers.RatingsManager( {} )
         notes_manager = ClientMediaManagers.NotesManager( {} )
-        file_viewing_stats_manager = ClientMediaManagers.FileViewingStatsManager( 0, 0, 0, 0 )
+        file_viewing_stats_manager = ClientMediaManagers.FileViewingStatsManager.STATICGenerateEmptyManager()
         
         media_result = ClientMediaResult.MediaResult( file_info_manager, tags_manager, locations_manager, ratings_manager, notes_manager, file_viewing_stats_manager )
         
@@ -2493,6 +3069,9 @@ class TestClientAPI( unittest.TestCase ):
         self._test_manage_cookies( connection, set_up_permissions )
         self._test_manage_pages( connection, set_up_permissions )
         self._test_search_files( connection, set_up_permissions )
+        self._test_search_files_predicate_parsing( connection, set_up_permissions )
+        self._test_file_metadata( connection, set_up_permissions )
+        self._test_get_files( connection, set_up_permissions )
         self._test_permission_failures( connection, set_up_permissions )
         self._test_cors_fails( connection )
         

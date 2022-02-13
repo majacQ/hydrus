@@ -1,11 +1,8 @@
 import os
-import queue
 import threading
 import time
-import traceback
 import typing
 
-from hydrus.core import HydrusExceptions
 from hydrus.core import HydrusConstants as HC
 from hydrus.core import HydrusData
 from hydrus.core import HydrusGlobals as HG
@@ -26,7 +23,7 @@ class JobKey( object ):
         self._maintenance_mode = maintenance_mode
         self._only_start_if_unbusy = only_start_if_unbusy
         self._stop_time = stop_time
-        self._cancel_on_shutdown = cancel_on_shutdown
+        self._cancel_on_shutdown = cancel_on_shutdown and maintenance_mode != HC.MAINTENANCE_SHUTDOWN
         
         self._start_time = HydrusData.GetNow()
         
@@ -588,6 +585,8 @@ class FileRWLock( object ):
     
 class QtAwareJob( HydrusThreading.SingleJob ):
     
+    PRETTY_CLASS_NAME = 'single UI job'
+    
     def __init__( self, controller, scheduler, window, initial_delay, work_callable ):
         
         HydrusThreading.SingleJob.__init__( self, controller, scheduler, initial_delay, work_callable )
@@ -633,6 +632,8 @@ class QtAwareJob( HydrusThreading.SingleJob ):
         
     
 class QtAwareRepeatingJob( HydrusThreading.RepeatingJob ):
+    
+    PRETTY_CLASS_NAME = 'repeating UI job'
     
     def __init__( self, controller, scheduler, window, initial_delay, period, work_callable ):
         

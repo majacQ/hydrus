@@ -16,6 +16,7 @@ from hydrus.core import HydrusSerialisable
 from hydrus.core import HydrusTags
 
 from hydrus.client import ClientConstants as CC
+from hydrus.client import ClientLocation
 from hydrus.client import ClientSearch
 from hydrus.client import ClientSerialisable
 from hydrus.client.gui import ClientGUIAsync
@@ -983,12 +984,12 @@ class ListBox( QW.QScrollArea ):
         return QP.isValid( self )
         
     
-    def _Activate( self, shift_down ) -> bool:
+    def _Activate( self, ctrl_down, shift_down ) -> bool:
         
         return False
         
     
-    def _ActivateFromKeyboard( self, shift_down ):
+    def _ActivateFromKeyboard( self, ctrl_down, shift_down ):
         
         selected_indices = []
         
@@ -1006,7 +1007,7 @@ class ListBox( QW.QScrollArea ):
                 
             
         
-        action_occurred = self._Activate( shift_down )
+        action_occurred = self._Activate( ctrl_down, shift_down )
         
         if action_occurred and len( self._selected_terms ) == 0 and len( selected_indices ) > 0:
             
@@ -1210,7 +1211,23 @@ class ListBox( QW.QScrollArea ):
             or_predicate = None
             
         
-        return ( predicates, or_predicate, inverse_predicates )
+        namespace_predicate = None
+        inverse_namespace_predicate = None
+        
+        if False not in [ predicate.GetType() == ClientSearch.PREDICATE_TYPE_TAG for predicate in predicates ]:
+            
+            namespaces = { HydrusTags.SplitTag( predicate.GetValue() )[0] for predicate in predicates }
+            
+            if len( namespaces ) == 1:
+                
+                ( namespace, ) = namespaces
+                
+                namespace_predicate = ClientSearch.Predicate( ClientSearch.PREDICATE_TYPE_NAMESPACE, value = namespace )
+                inverse_namespace_predicate = namespace_predicate.GetInverseCopy()
+                
+            
+        
+        return ( predicates, or_predicate, inverse_predicates, namespace_predicate, inverse_namespace_predicate )
         
     
     def _GetSafeHitIndex( self, logical_index, direction = None ):
@@ -1750,7 +1767,7 @@ class ListBox( QW.QScrollArea ):
             
         elif key_code in ( QC.Qt.Key_Enter, QC.Qt.Key_Return ):
             
-            self._ActivateFromKeyboard( shift )
+            self._ActivateFromKeyboard( ctrl, shift )
             
         else:
             
@@ -1824,9 +1841,10 @@ class ListBox( QW.QScrollArea ):
         
         if event.button() == QC.Qt.LeftButton:
             
+            ctrl_down = event.modifiers() & QC.Qt.ControlModifier
             shift_down = event.modifiers() & QC.Qt.ShiftModifier
             
-            action_occurred = self._Activate( shift_down )
+            action_occurred = self._Activate( ctrl_down, shift_down )
             
             if action_occurred:
                 
@@ -2089,9 +2107,9 @@ class ListBoxTags( ListBox ):
         return copyable_tag_strings
         
     
-    def _GetCurrentFileServiceKey( self ):
+    def _GetCurrentLocationContext( self ):
         
-        return CC.LOCAL_FILE_SERVICE_KEY
+        return ClientLocation.GetLocationContextForAllLocalMedia()
         
     
     def _GetCurrentPagePredicates( self ) -> typing.Set[ ClientSearch.Predicate ]:
@@ -2163,9 +2181,9 @@ class ListBoxTags( ListBox ):
             
             page_name = ', '.join( s )
             
-            file_service_key = self._GetCurrentFileServiceKey()
+            location_context = self._GetCurrentLocationContext()
             
-            HG.client_controller.pub( 'new_page_query', file_service_key, initial_predicates = predicates, page_name = page_name, activate_window = activate_window )
+            HG.client_controller.pub( 'new_page_query', location_context, initial_predicates = predicates, page_name = page_name, activate_window = activate_window )
             
             activate_window = False
             
@@ -2283,6 +2301,11 @@ class ListBoxTags( ListBox ):
             
         
     
+    def _SelectFilesWithTags( self, select_type ):
+        
+        pass
+        
+    
     def _UpdateBackgroundColour( self ):
         
         new_options = HG.client_controller.new_options
@@ -2292,13 +2315,18 @@ class ListBoxTags( ListBox ):
         self.widget().update()
         
     
+    def AddAdditionalMenuItems( self, menu: QW.QMenu ):
+        
+        pass
+        
+    
     def EventMouseMiddleClick( self, event ):
         
         self._HandleClick( event )
         
         if self.can_spawn_new_windows:
             
-            ( predicates, or_predicate, inverse_predicates ) = self._GetSelectedPredicatesAndInverseCopies()
+            ( predicates, or_predicate, inverse_predicates, namespace_predicate, inverse_namespace_predicate ) = self._GetSelectedPredicatesAndInverseCopies()
             
             if len( predicates ) > 0:
                 
@@ -2624,7 +2652,7 @@ class ListBoxTags( ListBox ):
                                 
                                 ideal_label = 'ideal is "{}" on: {}'.format( ideal, convert_service_keys_to_name_string( ideals_to_service_keys[ ideal ] ) )
                                 
-                                ClientGUIMenus.AppendMenuItem( siblings_menu, ideal_label, ideal_label, HG.client_controller.pub, 'clipboard', 'text', ideal_tag )
+                                ClientGUIMenus.AppendMenuItem( siblings_menu, ideal_label, ideal_label, HG.client_controller.pub, 'clipboard', 'text', ideal )
                                 
                             
                             #
@@ -2693,7 +2721,7 @@ class ListBoxTags( ListBox ):
                 
                 ClientGUIMenus.AppendSeparator( menu )
                 
-                ( predicates, or_predicate, inverse_predicates ) = self._GetSelectedPredicatesAndInverseCopies()
+                ( predicates, or_predicate, inverse_predicates, namespace_predicate, inverse_namespace_predicate ) = self._GetSelectedPredicatesAndInverseCopies()
                 
                 if len( predicates ) > 0:
                     
@@ -2771,7 +2799,17 @@ class ListBoxTags( ListBox ):
                         
                         if some_selected_are_not_excluded_explicitly:
                             
-                            ClientGUIMenus.AppendMenuItem( search_menu, 'exclude {} from current search'.format( predicates_selection_string ), 'Disallow the selected predicates for the current search.', self._ProcessMenuPredicateEvent, 'add_inverse_predicates' )
+                            ClientGUIMenus.AppendMenuItem( search_menu, 'exclude {} from the current search'.format( predicates_selection_string ), 'Disallow the selected predicates for the current search.', self._ProcessMenuPredicateEvent, 'add_inverse_predicates' )
+                            
+                        
+                        if namespace_predicate is not None and namespace_predicate not in current_predicates:
+                            
+                            ClientGUIMenus.AppendMenuItem( search_menu, 'add {} to current search'.format( namespace_predicate.ToString( with_count = False ) ), 'Add the namespace predicate to the current search.', self._ProcessMenuPredicateEvent, 'add_namespace_predicate' )
+                            
+                        
+                        if inverse_namespace_predicate is not None and inverse_namespace_predicate not in current_predicates:
+                            
+                            ClientGUIMenus.AppendMenuItem( search_menu, 'exclude {} from the current search'.format( namespace_predicate.ToString( with_count = False ) ), 'Disallow the namespace predicate from the current search.', self._ProcessMenuPredicateEvent, 'add_inverse_namespace_predicate' )
                             
                         
                     
@@ -2809,13 +2847,13 @@ class ListBoxTags( ListBox ):
                         label = 'files with all of "{}"'.format( tags_sorted_to_show_on_menu_string )
                         
                     
-                    ClientGUIMenus.AppendMenuItem( select_menu, label, 'Select the files with these tags.', HG.client_controller.pub, 'select_files_with_tags', self._page_key, 'AND', set( selected_actual_tags ) )
+                    ClientGUIMenus.AppendMenuItem( select_menu, label, 'Select the files with these tags.', self._SelectFilesWithTags, 'AND' )
                     
                     if len( selected_actual_tags ) > 1:
                         
                         label = 'files with any of "{}"'.format( tags_sorted_to_show_on_menu_string )
                         
-                        ClientGUIMenus.AppendMenuItem( select_menu, label, 'Select the files with any of these tags.', HG.client_controller.pub, 'select_files_with_tags', self._page_key, 'OR', set( selected_actual_tags ) )
+                        ClientGUIMenus.AppendMenuItem( select_menu, label, 'Select the files with any of these tags.', self._SelectFilesWithTags, 'OR' )
                         
                     
                     ClientGUIMenus.AppendMenu( menu, select_menu, 'select' )
@@ -2877,6 +2915,8 @@ class ListBoxTags( ListBox ):
                 
                 m = ClientGUIMenus.AppendMenu( menu, favourites_menu, 'favourites' )
                 
+            
+            self.AddAdditionalMenuItems( menu )
             
             CGC.core().PopupMenu( self, menu )
             
@@ -2968,7 +3008,7 @@ class ListBoxTagsColourOptions( ListBoxTags ):
         self._DataHasChanged()
         
     
-    def _Activate( self, shift_down ):
+    def _Activate( self, ctrl_down, shift_down ):
         
         deletable_terms = [ term for term in self._selected_terms if term.GetNamespace() not in self.PROTECTED_TERMS ]
         
@@ -2993,9 +3033,10 @@ class ListBoxTagsColourOptions( ListBoxTags ):
     
     def _DeleteActivate( self ):
         
+        ctrl_down = False
         shift_down = False
         
-        self._Activate( shift_down )
+        self._Activate( ctrl_down, shift_down )
         
     
     def _GenerateTermFromNamespaceAndColour( self, namespace, colour ) -> ClientGUIListBoxesData.ListBoxItemNamespaceColour:
@@ -3052,7 +3093,7 @@ class ListBoxTagsFilter( ListBoxTags ):
         ListBoxTags.__init__( self, parent )
         
     
-    def _Activate( self, shift_down ) -> bool:
+    def _Activate( self, ctrl_down, shift_down ) -> bool:
         
         if len( self._selected_terms ) > 0:
             
@@ -3228,6 +3269,16 @@ class ListBoxTagsDisplayCapable( ListBoxTags ):
         return work_callable
         
     
+    def _SelectFilesWithTags( self, and_or_or ):
+        
+        if self._page_key is not None:
+            
+            selected_actual_tags = self._GetTagsFromTerms( self._selected_terms )
+            
+            HG.client_controller.pub( 'select_files_with_tags', self._page_key, self._service_key, and_or_or, set( selected_actual_tags ) )
+            
+        
+    
     def GetSelectedTags( self ):
         
         return set( self._GetTagsFromTerms( self._selected_terms ) )
@@ -3299,7 +3350,7 @@ class ListBoxTagsStringsAddRemove( ListBoxTagsStrings ):
     tagsAdded = QC.Signal()
     tagsRemoved = QC.Signal()
     
-    def _Activate( self, shift_down ) -> bool:
+    def _Activate( self, ctrl_down, shift_down ) -> bool:
         
         if len( self._selected_terms ) > 0:
             
@@ -3400,9 +3451,10 @@ class ListBoxTagsStringsAddRemove( ListBoxTagsStrings ):
         
         if key in ClientGUIShortcuts.DELETE_KEYS_QT:
             
+            ctrl_down = modifier == ClientGUIShortcuts.SHORTCUT_MODIFIER_CTRL
             shift_down = modifier == ClientGUIShortcuts.SHORTCUT_MODIFIER_SHIFT
             
-            action_occurred = self._Activate( shift_down )
+            action_occurred = self._Activate( ctrl_down, shift_down )
             
         else:
             
@@ -3551,6 +3603,39 @@ class ListBoxTagsMedia( ListBoxTagsDisplayCapable ):
         self._RegenTermsToIndices()
         
     
+    def AddAdditionalMenuItems( self, menu: QW.QMenu ):
+        
+        ListBoxTagsDisplayCapable.AddAdditionalMenuItems( self, menu )
+        
+        if HG.client_controller.new_options.GetBoolean( 'advanced_mode' ):
+            
+            submenu = QW.QMenu( menu )
+            
+            for tag_display_type in ( ClientTags.TAG_DISPLAY_SELECTION_LIST, ClientTags.TAG_DISPLAY_ACTUAL, ClientTags.TAG_DISPLAY_STORAGE ):
+                
+                if tag_display_type == self._tag_display_type:
+                    
+                    checked = True
+                    
+                    callable = lambda: 1
+                    
+                else:
+                    
+                    checked = False
+                    
+                    callable = HydrusData.Call( self.SetTagDisplayType, tag_display_type )
+                    
+                
+                label = 'switch to "{}" tag display'.format( ClientTags.tag_display_str_lookup[ tag_display_type ] )
+                description = 'Switch which tags this list shows, this may not work!'
+                
+                ClientGUIMenus.AppendMenuCheckItem( submenu, label, description, checked, callable )
+                
+            
+            ClientGUIMenus.AppendMenu( menu, submenu, 'experimental' )
+            
+        
+    
     def IncrementTagsByMedia( self, media ):
         
         flat_media = ClientMedia.FlattenMedia( media )
@@ -3695,6 +3780,13 @@ class ListBoxTagsMedia( ListBoxTagsDisplayCapable ):
         self._DataHasChanged()
         
     
+    def SetTagDisplayType( self, tag_display_type: int ):
+        
+        self._tag_display_type = tag_display_type
+        
+        self.ForceTagRecalc()
+        
+    
     def SetTagServiceKey( self, service_key ):
         
         ListBoxTagsDisplayCapable.SetTagServiceKey( self, service_key )
@@ -3732,6 +3824,10 @@ class StaticBoxSorterForListBoxTags( ClientGUICommon.StaticBox ):
         
         ClientGUICommon.StaticBox.__init__( self, parent, title )
         
+        self._original_title = title
+        
+        self._tags_box = None
+        
         # make this its own panel
         self._tag_sort = ClientGUITagSorting.TagSortControl( self, HG.client_controller.new_options.GetDefaultTagSort(), show_siblings = show_siblings_sort )
         
@@ -3742,10 +3838,29 @@ class StaticBoxSorterForListBoxTags( ClientGUICommon.StaticBox ):
     
     def SetTagServiceKey( self, service_key ):
         
+        if self._tags_box is None:
+            
+            return
+            
+        
         self._tags_box.SetTagServiceKey( service_key )
+        
+        title = self._original_title
+        
+        if service_key != CC.COMBINED_TAG_SERVICE_KEY:
+            
+            title = '{} for {}'.format( title, HG.client_controller.services_manager.GetName( service_key ) )
+            
+        
+        self.SetTitle( title )
         
     
     def EventSort( self ):
+        
+        if self._tags_box is None:
+            
+            return
+            
         
         sort = self._tag_sort.GetValue()
         
@@ -3761,6 +3876,11 @@ class StaticBoxSorterForListBoxTags( ClientGUICommon.StaticBox ):
     
     def SetTagsByMedia( self, media ):
         
+        if self._tags_box is None:
+            
+            return
+            
+        
         self._tags_box.SetTagsByMedia( media )
         
     
@@ -3773,7 +3893,7 @@ class ListBoxTagsMediaHoverFrame( ListBoxTagsMedia ):
         self._canvas_key = canvas_key
         
     
-    def _Activate( self, shift_down ) -> bool:
+    def _Activate( self, ctrl_down, shift_down ) -> bool:
         
         HG.client_controller.pub( 'canvas_manage_tags', self._canvas_key )
         
@@ -3790,7 +3910,7 @@ class ListBoxTagsMediaTagsDialog( ListBoxTagsMedia ):
         self._delete_func = delete_func
         
     
-    def _Activate( self, shift_down ) -> bool:
+    def _Activate( self, ctrl_down, shift_down ) -> bool:
         
         if len( self._selected_terms ) > 0:
             

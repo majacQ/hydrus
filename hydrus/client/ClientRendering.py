@@ -6,26 +6,11 @@ from qtpy import QtCore as QC
 from qtpy import QtWidgets as QW
 from qtpy import QtGui as QG
 
-LZ4_OK = False
-
-try:
-    
-    import lz4
-    import lz4.block
-    
-    LZ4_OK = True
-    
-except Exception as e: # ImportError wasn't enough here as Linux went up the shoot with a __version__ doesn't exist bs
-    
-    pass
-    
-
+from hydrus.core import HydrusCompression
 from hydrus.core import HydrusConstants as HC
 from hydrus.core import HydrusData
-from hydrus.core import HydrusExceptions
 from hydrus.core import HydrusImageHandling
 from hydrus.core import HydrusGlobals as HG
-from hydrus.core import HydrusThreading
 from hydrus.core import HydrusVideoHandling
 
 from hydrus.client import ClientFiles
@@ -68,8 +53,6 @@ def GenerateHydrusBitmapFromNumPyImage( numpy_image, compressed = True ):
     
 def GenerateHydrusBitmapFromPILImage( pil_image, compressed = True ):
     
-    pil_image = HydrusImageHandling.Dequantize( pil_image )
-    
     if pil_image.mode == 'RGBA':
         
         depth = 4
@@ -93,6 +76,9 @@ class ImageRenderer( object ):
         self._num_frames = media.GetNumFrames()
         self._resolution = media.GetResolution()
         
+        self._icc_profile_bytes = None
+        self._qt_colourspace = None
+        
         self._path = None
         
         self._this_is_for_metadata_alone = this_is_for_metadata_alone
@@ -103,6 +89,8 @@ class ImageRenderer( object ):
     def _GetNumPyImage( self, clip_rect: QC.QRect, target_resolution: QC.QSize ):
         
         clip_size = clip_rect.size()
+        clip_width = clip_size.width()
+        clip_height = clip_size.height()
         
         ( my_width, my_height ) = self._resolution
         
@@ -121,27 +109,57 @@ class ImageRenderer( object ):
             
         else:
             
-            if target_resolution.width() > clip_size.width():
+            if target_resolution.width() > clip_width:
                 
-                # this is a tile that is being scaled!
-                # to reduce tiling artifacts, we want to oversample the clip for our tile so lanczos and friends can get good neighbour data and then crop it
+                # this is a tile that is being scaled up!
+                # to reduce tiling artifacts (disagreement at otherwise good borders), we want to oversample the clip for our tile so lanczos and friends can get good neighbour data and then crop it
                 # therefore, we'll figure out some padding for the clip, and then calculate what that means in the target end, and do a crop at the end
                 
                 # we want to pad. that means getting a larger resolution and keeping a record of the padding
-                # can't pad if we are at 0 for x or y, or up against width/height max
-                # but if we can pad, we will get a larger clip size and then _clip_ a better target endpoint. this is tricky.
+                # can't pad if we are at 0 for x or y, or up against width/height max, but no problem in that case obviously
                 
-                PADDING_AMOUNT = 4
+                # there is the float-int precision calculation problem again. we can't pick a padding of 3 in the clip if we are zooming by 150%--what do we clip off in the target: 4 or 5 pixels? whatever, we get warping
+                # first let's figure a decent zoom estimate:
                 
-                left_padding = min( PADDING_AMOUNT, clip_rect.x() )
-                top_padding = min( PADDING_AMOUNT, clip_rect.y() )
-                right_padding = min( PADDING_AMOUNT, my_width - clip_rect.bottomRight().x() )
-                bottom_padding = min( PADDING_AMOUNT, my_height - clip_rect.bottomRight().y() )
+                zoom_estimate = target_resolution.width() / clip_width if target_resolution.width() > target_resolution.height() else target_resolution.height() / clip_height
                 
-                clip_padding = QC.QMargins( left_padding, top_padding, right_padding, bottom_padding )
+                # now, if zoom is 150% (as a fraction, 3/2), we want a padding at the target of something that divides by 3 cleanly, or, since we are choosing at the clip in this case and will be multiplying, something that divides cleanly to 67%
                 
-                # this is ugly and super inaccurate
-                target_padding = clip_padding * ( target_resolution.width() / clip_size.width() )
+                zoom_estimate_for_clip_padding_multiplier = 1 / zoom_estimate
+                
+                # and we want a nice padding size limit, big enough to make clean numbers but not so big that we are rendering the 8 tiles in a square around the one we want
+                no_bigger_than = max( 4, ( clip_width + clip_height ) // 4 )
+                
+                nice_number = HydrusData.GetNicelyDivisibleNumberForZoom( zoom_estimate_for_clip_padding_multiplier, no_bigger_than )
+                
+                if nice_number != -1:
+                    
+                    # lanczos, I think, uses 4x4 neighbour grid to render. we'll say padding of 4 pixels to be safe for now, although 2 or 3 is probably correct???
+                    # however it works, numbers these small are not a big deal
+                    
+                    while nice_number < 4:
+                        
+                        nice_number *= 2
+                        
+                    
+                    PADDING_AMOUNT = nice_number
+                    
+                    # LIMITATION: There is still a problem here for the bottom and rightmost edges. These tiles are not squares, so the shorter/thinner dimension my be an unpleasant number and be warped _anyway_, regardless of nice padding
+                    # perhaps there is a way to boost left or top padding so we are rendering a full square tile but still cropping our target at the end, but with a little less warping
+                    # I played around with this idea but did not have much success
+                    
+                    LEFT_PADDING_AMOUNT = PADDING_AMOUNT
+                    TOP_PADDING_AMOUNT = PADDING_AMOUNT
+                    
+                    left_padding = min( LEFT_PADDING_AMOUNT, clip_rect.x() )
+                    top_padding = min( TOP_PADDING_AMOUNT, clip_rect.y() )
+                    right_padding = min( PADDING_AMOUNT, ( my_width - 1 ) - clip_rect.bottomRight().x() )
+                    bottom_padding = min( PADDING_AMOUNT, ( my_height - 1 ) - clip_rect.bottomRight().y() )
+                    
+                    clip_padding = QC.QMargins( left_padding, top_padding, right_padding, bottom_padding )
+                    
+                    target_padding = clip_padding * zoom_estimate
+                    
                 
             
             clip_rect_with_padding = clip_rect + clip_padding
@@ -192,7 +210,16 @@ class ImageRenderer( object ):
         
         self._path = client_files_manager.GetFilePath( self._hash, self._mime )
         
-        self._numpy_image = ClientImageHandling.GenerateNumPyImage( self._path, self._mime )
+        try:
+            
+            self._numpy_image = ClientImageHandling.GenerateNumPyImage( self._path, self._mime )
+            
+        except Exception as e:
+            
+            HydrusData.ShowText( 'Problem rendering image at "{}"! Error follows:'.format( self._path ) )
+            
+            HydrusData.ShowException( e )
+            
         
         if not self._this_is_for_metadata_alone:
             
@@ -257,11 +284,48 @@ class ImageRenderer( object ):
         
         data = numpy_image.data
         
-        return HG.client_controller.bitmap_manager.GetQtImageFromBuffer( width, height, depth * 8, data )
+        qt_image = HG.client_controller.bitmap_manager.GetQtImageFromBuffer( width, height, depth * 8, data )
+        
+        # ok this stuff was originally for image ICC, as loaded using PIL's image.info dict
+        # ultimately I figured out how to do the conversion with PIL itself, which was more universal
+        # however if we end up pulling display ICC or taking user-set ICC, we may want this qt code somewhere
+        
+        if self._icc_profile_bytes is not None:
+            
+            try:
+                
+                if self._qt_colourspace is None:
+                    
+                    self._qt_colourspace = QG.QColorSpace.fromIccProfile( self._icc_profile_bytes )
+                    
+                
+                # originally this was converting image ICC to sRGB, but I think in the 'display' sense, we'd be setting sRGB and then converting to the user-set ICC
+                # 'hey, Qt, this QImage is in sRGB (I already normalised it), now convert it to xxx, thanks!'
+                
+                qt_image.setColorSpace( self._qt_colourspace )
+                qt_image.convertToColorSpace( QG.QColorSpace.SRgb )
+                
+            except:
+                
+                HydrusData.Print( 'Failed to load the ICC Profile for {} into a Qt Colourspace!'.format( self._path ) )
+                
+                self._icc_profile_bytes = None
+                
+            
+        
+        return qt_image
         
     
     def GetQtPixmap( self, clip_rect = None, target_resolution = None ):
-    
+        
+        # colourspace conversions seem to be exclusively QImage territory
+        if self._icc_profile_bytes is not None:
+            
+            qt_image = self.GetQtImage( clip_rect = clip_rect, target_resolution = target_resolution )
+            
+            return QG.QPixmap.fromImage( qt_image )
+            
+        
         ( my_width, my_height ) = self._resolution
         
         if clip_rect is None:
@@ -503,7 +567,7 @@ class RasterContainerVideo( RasterContainer ):
         
         while True:
             
-            if self._stop or HG.view_shutdown:
+            if self._stop or HG.started_shutdown:
                 
                 self._renderer.Stop()
                 
@@ -777,6 +841,39 @@ class RasterContainerVideo( RasterContainer ):
         return self._times_to_play_gif
         
     
+    def GetFrameIndex( self, timestamp_ms ):
+        
+        if self._media.GetMime() == HC.IMAGE_GIF:
+            
+            so_far = 0
+            
+            for ( frame_index, duration_ms ) in enumerate( self._durations ):
+                
+                so_far += duration_ms
+                
+                if so_far > timestamp_ms:
+                    
+                    result = frame_index
+                    
+                    if FrameIndexOutOfRange( result, 0, self.GetNumFrames() - 1 ):
+                        
+                        return 0
+                        
+                    else:
+                        
+                        return result
+                        
+                    
+                
+            
+            return 0
+            
+        else:
+            
+            return timestamp_ms // self._average_frame_duration
+            
+        
+    
     def GetTimestampMS( self, frame_index ):
         
         if self._media.GetMime() == HC.IMAGE_GIF:
@@ -839,16 +936,16 @@ class HydrusBitmap( object ):
     
     def __init__( self, data, size, depth, compressed = True ):
         
-        if not LZ4_OK:
-            
-            compressed = False
-            
-        
         self._compressed = compressed
+        
+        if isinstance( data, memoryview ) and not data.c_contiguous:
+            
+            data = data.copy()
+            
         
         if self._compressed:
             
-            self._data = lz4.block.compress( data )
+            self._data = HydrusCompression.CompressFastBytesToBytes( data )
             
         else:
             
@@ -863,7 +960,7 @@ class HydrusBitmap( object ):
         
         if self._compressed:
             
-            return lz4.block.decompress( self._data )
+            return HydrusCompression.DecompressFastBytesToBytes( self._data )
             
         else:
             

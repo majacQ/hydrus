@@ -20,14 +20,6 @@ from hydrus.client.gui import ClientGUIMenus
 from hydrus.client.gui import ClientGUIShortcuts
 from hydrus.client.gui import QtPorting as QP
 
-CANVAS_MEDIA_VIEWER = 0
-CANVAS_PREVIEW = 1
-
-canvas_str_lookup = {}
-
-canvas_str_lookup[ CANVAS_MEDIA_VIEWER ] = 'media viewer'
-canvas_str_lookup[ CANVAS_PREVIEW ] = 'preview'
-
 def AddGridboxStretchSpacer( layout: QW.QGridLayout ):
     
     layout.addItem( QW.QSpacerItem( 10, 10, QW.QSizePolicy.Expanding, QW.QSizePolicy.Fixed ) )
@@ -89,15 +81,15 @@ def WrapInGrid( parent, rows, expand_text = False, add_stretch_at_end = True ):
     
     return gridbox
     
-def WrapInText( control, parent, text, colour = None ):
+def WrapInText( control, parent, text, object_name = None ):
     
     hbox = QP.HBoxLayout()
     
     st = BetterStaticText( parent, text )
     
-    if colour is not None:
+    if object_name is not None:
         
-        QP.SetForegroundColour( st, colour )
+        st.setObjectName( object_name )
         
     
     QP.AddToLayout( hbox, st, CC.FLAGS_CENTER_PERPENDICULAR )
@@ -255,6 +247,120 @@ class BetterButton( ShortcutAwareToolTipMixin, QW.QPushButton ):
         button_label = ClientGUIFunctions.EscapeMnemonics( label )
         
         QW.QPushButton.setText( self, button_label )
+        
+    
+class BetterCheckBoxList( QW.QListWidget ):
+    
+    checkBoxListChanged = QC.Signal()
+    rightClicked = QC.Signal()
+    
+    def __init__( self, parent: QW.QWidget ):
+        
+        QW.QListWidget.__init__( self, parent )
+        
+        self.itemClicked.connect( self._ItemCheckStateChanged )
+        
+        self.setSelectionMode( QW.QAbstractItemView.ExtendedSelection )
+        
+    
+    def _ItemCheckStateChanged( self, item ):
+        
+        self.checkBoxListChanged.emit()
+        
+    
+    def Append( self, text, data, starts_checked = False ):
+        
+        item = QW.QListWidgetItem()
+        
+        item.setFlags( item.flags() | QC.Qt.ItemIsUserCheckable )
+        
+        qt_state = QC.Qt.Checked if starts_checked else QC.Qt.Unchecked
+        
+        item.setCheckState( qt_state )
+        
+        item.setText( text )
+        
+        item.setData( QC.Qt.UserRole, data )
+        
+        self.addItem( item )
+        
+        self._ItemCheckStateChanged( item )
+        
+    
+    def Check( self, index: int, value: bool = True ):
+        
+        qt_state = QC.Qt.Checked if value else QC.Qt.Unchecked
+        
+        item = self.item( index )
+        
+        item.setCheckState( qt_state )
+        
+        self._ItemCheckStateChanged( item )
+        
+    
+    def Flip( self, index: int ):
+        
+        self.Check( index, not self.IsChecked( index ) )
+        
+    
+    def GetData( self, index: int ):
+        
+        return self.item( index ).data( QC.Qt.UserRole )
+        
+    
+    def GetCheckedIndices( self ) -> typing.List[ int ]:
+        
+        checked_indices = [ i for i in range( self.count() ) if self.IsChecked( i ) ]
+        
+        return checked_indices
+        
+    
+    def GetSelectedIndices( self ):
+        
+        selected_indices = [ i for i in range( self.count() ) if self.IsSelected( i ) ]
+        
+        return selected_indices
+        
+    
+    def GetValue( self ):
+        
+        result = [ self.GetData( index ) for index in self.GetCheckedIndices() ]
+        
+        return result
+        
+    
+    def IsChecked( self, index: int ) -> bool:
+        
+        return self.item( index ).checkState() == QC.Qt.Checked
+        
+    
+    def IsSelected( self, index: int ) -> bool:
+        
+        return self.item( index ).isSelected()
+        
+    
+    def SetValue( self, datas: typing.Collection ):
+        
+        for index in range( self.count() ):
+            
+            data = self.GetData( index )
+            
+            check_it = data in datas
+            
+            self.Check( index, check_it )
+            
+        
+    
+    def mousePressEvent( self, event ):
+        
+        if event.button() == QC.Qt.RightButton:
+            
+            self.rightClicked.emit()
+            
+        else:
+            
+            QW.QListWidget.mousePressEvent( self, event )
+            
         
     
 class BetterChoice( QW.QComboBox ):
@@ -451,6 +557,37 @@ class BetterNotebook( QW.QTabWidget ):
     def SelectRight( self ):
         
         self._ShiftSelection( 1 )
+        
+    
+class ButtonWithMenuArrow( QW.QToolButton ):
+    
+    def __init__( self, parent: QW.QWidget, action: QW.QAction ):
+        
+        QW.QToolButton.__init__( self, parent )
+        
+        self.setPopupMode( QW.QToolButton.MenuButtonPopup )
+        
+        self.setToolButtonStyle( QC.Qt.ToolButtonTextOnly )
+        
+        self.setDefaultAction( action )
+        
+        self._menu = QW.QMenu( self )
+        
+        self.setMenu( self._menu )
+        
+        self._menu.aboutToShow.connect( self._ClearAndPopulateMenu )
+        
+    
+    def _ClearAndPopulateMenu( self ):
+        
+        self._menu.clear()
+        
+        self._PopulateMenu( self._menu )
+        
+    
+    def _PopulateMenu( self, menu ):
+        
+        raise NotImplementedError()
         
     
 class BetterRadioBox( QP.RadioBox ):
@@ -713,6 +850,11 @@ class CheckboxManagerOptions( CheckboxManager ):
         new_options = HG.client_controller.new_options
         
         new_options.InvertBoolean( self._boolean_name )
+        
+        if self._boolean_name == 'advanced_mode':
+            
+            HG.client_controller.pub( 'notify_advanced_mode' )
+            
         
         HG.client_controller.pub( 'checkbox_manager_inverted' )
         HG.client_controller.pub( 'notify_new_menu_option' )
@@ -1663,10 +1805,10 @@ class StaticBox( QW.QFrame ):
         
         title_font = QG.QFont( normal_font_family, int( normal_font_size ), QG.QFont.Bold )
         
-        title_text = QW.QLabel( title, self )
-        title_text.setFont( title_font )
+        self._title_st = BetterStaticText( self, label = title )
+        self._title_st.setFont( title_font )
         
-        QP.AddToLayout( self._sizer, title_text, CC.FLAGS_CENTER )
+        QP.AddToLayout( self._sizer, self._title_st, CC.FLAGS_CENTER )
         
         self.setLayout( self._sizer )
         
@@ -1680,6 +1822,11 @@ class StaticBox( QW.QFrame ):
         QP.AddToLayout( self._sizer, widget, flags )
 
         self.layout().addSpacerItem( self._spacer )
+        
+    
+    def SetTitle( self, title ):
+        
+        self._title_st.setText( title )
         
     
 class RadioBox( StaticBox ):

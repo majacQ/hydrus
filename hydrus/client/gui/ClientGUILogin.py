@@ -1131,7 +1131,7 @@ class EditLoginsPanel( ClientGUIScrolledPanels.EditPanel ):
         return domains_to_login_info
         
     
-def GenerateTestNetworkJobPresentationContextFactory( window, network_job_control ):
+def GenerateTestNetworkJobPresentationContextFactory( window: QW.QWidget, network_job_control: ClientGUINetworkJobControl.NetworkJobControl ):
     
     def network_job_presentation_context_factory( network_job ):
         
@@ -1142,7 +1142,14 @@ def GenerateTestNetworkJobPresentationContextFactory( window, network_job_contro
                 return
                 
             
-            network_job_control.SetNetworkJob( nj )
+            if nj is None:
+                
+                network_job_control.ClearNetworkJob()
+                
+            else:
+                
+                network_job_control.SetNetworkJob( nj )
+                
             
         
         def enter_call():
@@ -1273,7 +1280,7 @@ class EditLoginScriptPanel( ClientGUIScrolledPanels.EditPanel ):
         
         help_button = ClientGUIMenuButton.MenuBitmapButton( self, CC.global_pixmaps().help, menu_items )
         
-        help_hbox = ClientGUICommon.WrapInText( help_button, self, 'help for this panel -->', QG.QColor( 0, 0, 255 ) )
+        help_hbox = ClientGUICommon.WrapInText( help_button, self, 'help for this panel -->', object_name = 'HydrusIndeterminate' )
         
         #
         

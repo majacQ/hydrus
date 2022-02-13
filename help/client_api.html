@@ -10,7 +10,7 @@
 			<p>The hydrus client now supports a very simple API so you can access it with external programs.</p>
 			<p>By default, the Client API is not turned on. Go to <i>services->manage services</i> and give it a port to get it started. I recommend you not allow non-local connections (i.e. only requests from the same computer will work) to start with.</p>
 			<p>The Client API should start immediately. It will only be active while the client is open. To test it is running all correct (and assuming you used the default port of 45869), try loading this:</p>
-			<a href="http://127.0.0.1:45869"><pre>http://127.0.0.1:45869</pre></a>
+			<a href="http://127.0.0.1:45869"><code>http://127.0.0.1:45869</code></a>
 			<p>You should get a welcome page. By default, the Client API is HTTP, which means it is ok for communication on the same computer or across your home network (e.g. your computer's web browser talking to your computer's hydrus), but not secure for transmission across the internet (e.g. your phone to your home computer). You can turn on HTTPS, but due to technical complexities it will give itself a self-signed 'certificate', so the security is good but imperfect, and whatever is talking to it (e.g. your web browser looking at <a href="https://127.0.0.1:45869">https://127.0.0.1:45869</a>) may need to add an exception.</p>
 			<p>The Client API is still experimental and sometimes not user friendly. If you want to talk to your home computer across the internet, you will need some networking experience. You'll need a static IP or reverse proxy service or dynamic domain solution like no-ip.org so your device can locate it, and potentially port-forwarding on your router to expose the port. If you have a way of hosting a domain and have a signed certificate (e.g. from <a href="https://letsencrypt.org/">Let's Encrypt</a>), you can overwrite the client.crt and client.key files in your 'db' directory and HTTPS hydrus should host with those.</p>
 			<p>Once the API is running, go to its entry in <i>services->review services</i>. Each external program trying to access the API will need its own access key, which is the familiar 64-character hexadecimal used in many places in hydrus. You can enter the details manually from the review services panel and then copy/paste the key to your external program, or the program may have the ability to request its own access while a mini-dialog launched from the review services panel waits to catch the request.</p>
@@ -21,8 +21,10 @@
                                 <li><a href="https://github.com/NO-ob/LoliSnatcher_Droid">https://github.com/NO-ob/LoliSnatcher_Droid</a> - LoliSnatcher, a booru client for Android that can talk to hydrus</li>
 				<li><a href="https://www.animebox.es/">https://www.animebox.es/</a> - Anime Boxes, a booru browser, now supports adding your client as a Hydrus Server</li>
                                 <li><a href="https://ififfy.github.io/flipflip/#/">https://ififfy.github.io/flipflip/#/</a> - FlipFlip, an advanced slideshow interface, now supports hydrus as a source</li>
+                                <li><a href="https://github.com/GoAwayNow/Iwara-Hydrus">https://github.com/GoAwayNow/Iwara-Hydrus</a> - Iwara-Hydrus, a userscript to simplify sending Iwara videos to Hydrus Network</li>
 				<li><a href="https://gitgud.io/koto/hydrus-archive-delete">https://gitgud.io/koto/hydrus-archive-delete</a> - Archive/Delete filter in your web browser</li>
 				<li><a href="https://gitgud.io/koto/hydrus-dd">https://gitgud.io/koto/hydrus-dd</a> - DeepDanbooru neural network tagging for Hydrus</li>
+                                <li><a href="https://github.com/floogulinc/hyextract">https://github.com/floogulinc/hyextract</a> - Extract archives from Hydrus and reimport with tags and URL associations</li>
 				<li><a href="https://gitgud.io/prkc/dolphin-hydrus-actions">https://gitgud.io/prkc/dolphin-hydrus-actions</a> - Adds Hydrus right-click context menu actions to Dolphin file manager.</li>
 			</ul>
 			<h3 id="modules"><a href="#modules">Library modules created by hydrus users:</a></h3>
@@ -31,8 +33,31 @@
 				<li><a href="https://github.com/cravxx/hydrus.js">https://github.com/cravxx/hydrus.js</a> - A node.js module that talks to the API.</li>
 			</ul>
 			<h3 id="api"><a href="#api">API</a></h3>
-			<p>On 200 OK, the API returns JSON for everything except actual file/thumbnail requests. On 4XX and 5XX, assume it will return plain text, sometimes a raw traceback. You'll typically get 400 for a missing parameter, 401/403/419 for missing/insufficient/expired access, and 500 for a real deal serverside error.</p>
-			<h3 id="access"><a href="#access">Access and permissions</a></h3>
+			<p>In general, the API deals with standard UTF-8 JSON. POST requests and 200 OK responses are generally going to be a JSON 'Object' with variable names as keys and values obviously as values. There are examples throughout this document. For GET requests, everything is in standard GET parameters, but some variables are complicated and will need to be JSON encoded and then URL encoded. An example would be the 'tags' parameter on <a href="#get_files_search_files">GET /get_files/search_files</a>, which is a list of strings. Since GET http URLs have limits on what characters are allowed, but hydrus tags can have all sorts of characters, you'll be doing this:</p>
+                        <ul>
+                                <li>
+                                    <p>Your list of tags:</p>
+                                    <p><code>[ 'character:samus aran', 'creator:青い桜', 'system:height > 2000' ]</code></p>
+                                </li>
+                                <li>
+                                    <p>JSON encoded:</p>
+                                    <p><code>["character:samus aran", "creator:\\u9752\\u3044\\u685c", "system:height > 2000"]</code></p>
+                                </li>
+                                <li>
+                                    <p>Then URL encoded:</p>
+                                    <p><code>%5B%22character%3Asamus%20aran%22%2C%20%22creator%3A%5Cu9752%5Cu3044%5Cu685c%22%2C%20%22system%3Aheight%20%3E%202000%22%5D</code></p>
+                                </li>
+                                <li>
+                                    <p>In python, converting your tag list to the URL encoded string would be:</p>
+                                    <p><code>urllib.parse.quote( json.dumps( tag_list ) )</code></p>
+                                </li>
+                                <li>
+                                    <p>Full URL path example:</p>
+                                    <p><code>/get_files/search_files?file_sort_type=6&file_sort_asc=false&tags=%5B%22character%3Asamus%20aran%22%2C%20%22creator%3A%5Cu9752%5Cu3044%5Cu685c%22%2C%20%22system%3Aheight%20%3E%202000%22%5D</code></p>
+                                </li>
+                        </ul>
+			<p>On 200 OK, the API returns JSON for everything except actual file/thumbnail requests. On 4XX and 5XX, assume it will return plain text, which may be a raw traceback that I'd be interested in seeing. You'll typically get 400 for a missing parameter, 401/403/419 for missing/insufficient/expired access, and 500 for a real deal serverside error.</p>
+                        <h3 id="access"><a href="#access">Access and permissions</a></h3>
 			<p>The client gives access to its API through different 'access keys', which are the typical 64-character hex used in many other places across hydrus. Each guarantees different permissions such as handling files or tags. Most of the time, a user will provide full access, but do not assume this. If the access header or parameter is not provided, you will get 401, and all insufficient permission problems will return 403 with appropriate error text.</p>
 			<p>Access is required for every request. You can provide this as an http header, like so:</p>
 			<ul>
@@ -67,7 +92,7 @@
 					<h4><a href="#adding_tags">Adding Tags</a></h4>
 					<ul>
 						<li><a href="#add_tags_clean_tags">GET /add_tags/clean_tags</a></li>
-						<li><a href="#add_tags_get_tag_services">GET /add_tags/get_tag_services</a> (legacy)</li>
+						<li><a href="#add_tags_get_tag_services">GET /add_tags/get_tag_services</a> (legacy, do not use)</li>
 						<li><a href="#add_tags_add_tags">POST /add_tags/add_tags</a></li>
 					</ul>
 					<h4><a href="#adding_urls">Adding URLs</a></h4>
@@ -87,6 +112,7 @@
 					<ul>
 						<li><a href="#manage_pages_get_pages">GET /manage_pages/get_pages</a></li>
 						<li><a href="#manage_pages_get_page_info">GET /manage_pages/get_page_info</a></li>
+						<li><a href="#manage_pages_add_files">POST /manage_pages/add_files</a></li>
 						<li><a href="#manage_pages_focus_page">POST /manage_pages/focus_page</a></li>
 					</ul>
 					<h4><a href="#searching_files">Searching and Fetching Files</a></h4>
@@ -100,6 +126,7 @@
 					<ul>
 						<li><a href="#manage_database_lock_on">POST /manage_database/lock_on</a></li>
 						<li><a href="#manage_database_lock_off">POST /manage_database/lock_off</a></li>
+						<li><a href="#manage_database_mr_bones">GET /manage_database/mr_bones</a></li>
 					</ul>
 			</ul>
 			<h3 id="access_management"><a href="#access_management">Access Management</a></h3>
@@ -221,52 +248,52 @@
 						<ul>
 							<li>
 <pre>{
-    'local_tags': [
+    "local_tags" : [
         {
-            'name': 'my tags',
-            'service_key': '6c6f63616c2074616773'
+            "name" : "my tags",
+            "service_key" : "6c6f63616c2074616773"
         },
         {
-            'name': 'filenames',
-            'service_key': '231a2e992b67101318c410abb6e7d98b6e32050623f138ca93bd4ad2993de31b'
+            "name" : "filenames",
+            "service_key" : "231a2e992b67101318c410abb6e7d98b6e32050623f138ca93bd4ad2993de31b"
         }
     ],
-    'tag_repositories': [
+    "tag_repositories" : [
         {
-            'name': 'PTR',
-            'service_key': 'ccb0cf2f9e92c2eb5bd40986f72a339ef9497014a5fb8ce4cea6d6c9837877d9'
+            "name" : "PTR",
+            "service_key" : "ccb0cf2f9e92c2eb5bd40986f72a339ef9497014a5fb8ce4cea6d6c9837877d9"
         }
     ],
-    'local_files': [
+    "local_files" : [
         {
-            'name': 'my files',
-            'service_key': '6c6f63616c2066696c6573'
+            "name" : "my files",
+            "service_key" : "6c6f63616c2066696c6573"
         }
     ],
-    'file_repositories': [
+    "file_repositories" : [
     ],
-    'all_local_files': [
+    "all_local_files" : [
         { 
-            'name': 'all local files',
-            'service_key': '616c6c206c6f63616c2066696c6573'
+            "name" : "all local files",
+            "service_key" : "616c6c206c6f63616c2066696c6573"
         }
     ],
-    'all_known_files': [
+    "all_known_files" : [
         {
-            'name': 'all known files',
-            'service_key': '616c6c206b6e6f776e2066696c6573'
+            "name" : "all known files",
+            "service_key" : "616c6c206b6e6f776e2066696c6573"
         }
     ],
-    'all_known_tags': [
+    "all_known_tags" : [
         {
-            'name': 'all known tags',
-            'service_key': '616c6c206b6e6f776e2074616773'
+            "name" : "all known tags",
+            "service_key" : "616c6c206b6e6f776e2074616773"
         }
     ],
-    'trash': [
+    "trash" : [
         {
-            'name': 'trash',
-            'service_key': '7472617368'
+            "name" : "trash",
+            "service_key" : "7472617368"
         }
     ]
 }</pre>
@@ -454,13 +481,13 @@
 }</pre>
 							</li>
 						</ul>
-						<p>Mostly, hydrus simply trims excess whitespace, but the other examples are rare issues you might run into. 'system' is an invalid namespace, tags cannot be prefixed with hyphens, and any tag starting with ':' is secretly dealt with internally as "[no namespace]:[colon-prefixed-subtag]". Again, you probably won't run into these, but if you see a mismatch somewhere and want to figure it out, or just want to sort some numbered tags, you might like to try this.</p>
+						<p>Mostly, hydrus simply trims excess whitespace, but the other examples are rare issues you might run into. 'system' is an invalid namespace, tags cannot be prefixed with hyphens, and any tag starting with ' :' is secretly dealt with internally as "[no namespace]:[colon-prefixed-subtag]". Again, you probably won't run into these, but if you see a mismatch somewhere and want to figure it out, or just want to sort some numbered tags, you might like to try this.</p>
 					</li>
 				</ul>
 			</div>
 			<div class="apiborder">
 				<h3 id="add_tags_get_tag_services"><a href="#add_tags_get_tag_services"><b>GET /add_tags/get_tag_services</b></a></h3>
-                                <p class="warning"><b>This is now legacy! Use <a href="#get_services">/get_services</a> instead!</b></p>
+                                <p class="warning"><b>This is becoming obsolete and will be removed! Use <a href="#get_services">/get_services</a> instead!</b></p>
 				<p><i>Ask the client about its tag services.</i></p>
 				<ul>
 					<li><p>Restricted access: YES. Add Tags permission needed.</p></li>
@@ -491,14 +518,16 @@
 					<li><p>Required Headers: n/a</p></li>
 					<li><p>Arguments (in JSON):</p></li>
 					<ul>
-						<li>hash : (an SHA256 hash for a file in 64 characters of hexadecimal)</li>
-						<li>hashes : (a list of SHA256 hashes)</li>
-						<li>service_names_to_tags : (an Object of service names to lists of tags to be 'added' to the files)</li>
-						<li>service_names_to_actions_to_tags : (an Object of service names to content update actions to lists of tags)</li>
-						<li>add_siblings_and_parents : <i>obsolete, now does nothing</i></li>
+						<li>hash : (selective A, an SHA256 hash for a file in 64 characters of hexadecimal)</li>
+						<li>hashes : (selective A, a list of SHA256 hashes)</li>
+						<li>service_names_to_tags : (selective B, an Object of service names to lists of tags to be 'added' to the files)</li>
+						<li>service_keys_to_tags : (selective B, an Object of service keys to lists of tags to be 'added' to the files)</li>
+						<li>service_names_to_actions_to_tags : (selective B, an Object of service names to content update actions to lists of tags)</li>
+						<li>service_keys_to_actions_to_tags : (selective B, an Object of service keys to content update actions to lists of tags)</li>
 					</ul>
-					<p>You can use either 'hash' or 'hashes', and you can use either the simple add-only 'service_names_to_tags' or the advanced 'service_names_to_actions_to_tags'.</p>
-					<p>The service names are as in the <i>/add_tags/get_tag_services</i> call.</p>
+					<p>You can use either 'hash' or 'hashes'.</p>
+                                        <p>You can use either 'service_names_to...' or 'service_keys_to...', where names is simple and human-friendly "my tags" and similar (but may be renamed by a user), but keys is a little more complicated but accurate/unique. Since a client may have multiple tag services with non-default names and pseudo-random keys, if it is not your client you will need to check the <a href="#get_services">/get_services</a> call to get the names or keys, and you may need some selection UI on your end so the user can pick what to do if there are multiple choices. I encourage using keys if you can.</p>
+                                        <p>Also, you can use either '...to_tags', which is simple and add-only, or '...to_actions_to_tags', which is more complicated and allows you to remove/petition or rescind pending content.</p>
 					<p>The permitted 'actions' are:</p>
 					<ul>
 						<li>0 - Add to a local tag service.</li>
@@ -528,12 +557,12 @@
 					<p>A complicated transaction with all possible actions:</p>
 <pre>{
 	"hash" : "df2a7b286d21329fc496e3aa8b8a08b67bb1747ca32749acb3f5d544cbfc0f56",
-	"service_names_to_actions_to_tags" : {
-		"my tags" : {
+	"service_keys_to_actions_to_tags" : {
+		"6c6f63616c2074616773" : {
 			"0" : [ "character:supergirl", "rating:safe" ],
 			"1" : [ "character:superman" ]
 		},
-		"public tag repository" : {
+		"aa0424b501237041dab0308c02c35454d377eebd74cfbc5b9d7b3e16cc2193e9" : {
 			"2" : [ "character:supergirl", "rating:safe" ],
 			"3" : [ "filename:image.jpg" ],
 			"4" : [ [ "creator:danban faga", "typo" ], [ "character:super_girl", "underscore" ] ]
@@ -660,7 +689,8 @@
 							<li>destination_page_key : (optional page identifier for the page to receive the url)</li>
 							<li>destination_page_name : (optional page name to receive the url)</li>
 							<li>show_destination_page : (optional, defaulting to false, controls whether the UI will change pages on add)</li>
-							<li>service_names_to_additional_tags : (optional tags to give to any files imported from this url)</li>
+							<li>service_names_to_additional_tags : (optional, selective, tags to give to any files imported from this url)</li>
+							<li>service_keys_to_additional_tags : (optional, selective, tags to give to any files imported from this url)</li>
 							<li>filterable_tags : (optional tags to be filtered by any tag import options that applies to the URL)</li>
 							<li><i>service_names_to_tags : (obsolete, legacy synonym for service_names_to_additional_tags)</i></li>
 						</ul>
@@ -668,7 +698,7 @@
 					<p>If you specify a destination_page_name and an appropriate importer page already exists with that name, that page will be used. Otherwise, a new page with that name will be recreated (and used by subsequent calls with that name). Make sure it that page name is unique (e.g. '/b/ threads', not 'watcher') in your client, or it may not be found.</p>
 					<p>Alternately, destination_page_key defines exactly which page should be used. Bear in mind this page key is only valid to the current session (they are regenerated on client reset or session reload), so you must figure out which one you want using the <a href="#manage_pages_get_pages">/manage_pages/get_pages</a> call. If the correct page_key is not found, or the page it corresponds to is of the incorrect type, the standard page selection/creation rules will apply.</p> 
 					<p>show_destination_page defaults to False to reduce flicker when adding many URLs to different pages quickly. If you turn it on, the client will behave like a URL drag and drop and select the final page the URL ends up on.</p>
-					<p>service_names_to_additional_tags uses the same data structure as for /add_tags/add_tags. You will need 'add tags' permission, or this will 403. These tags work exactly as 'additional' tags work in a <i>tag import options</i>. They are service specific, and always added unless some advanced tag import options checkbox (like 'only add tags to new files') is set.</p>
+					<p>service_names_to_additional_tags and service_keys_to_additional_tags use the same data structure as in /add_tags/add_tags--service ids to a list of tags to add. You will need 'add tags' permission or this will 403. These tags work exactly as 'additional' tags work in a <i>tag import options</i>. They are service specific, and always added unless some advanced tag import options checkbox (like 'only add tags to new files') is set.</p>
 					<p>filterable_tags works like the tags parsed by a hydrus downloader. It is just a list of strings. They have no inherant service and will be sent to a <i>tag import options</i>, if one exists, to decide which tag services get what. This parameter is useful if you are pulling all a URL's tags outside of hydrus and want to have them processed like any other downloader, rather than figuring out service names and namespace filtering on your end. Note that in order for a tag import options to kick in, I think you will have to have a Post URL URL Class hydrus-side set up for the URL so some tag import options (whether that is Class-specific or just the default) can be loaded at import time.</p>
 					<li>
 						<p>Example request bodies:</p>
@@ -1046,6 +1076,40 @@
 				</ul>
 			</div>
 			<div class="apiborder">
+				<h3 id="manage_pages_add_files"><a href="#manage_pages_add_files"><b>POST /manage_pages/add_files</b></a></h3>
+				<p><i>Add files to a page.</i></p>
+				<ul>
+					<li><p>Restricted access: YES. Manage Pages permission needed.</p></li>
+					<li>
+						<p>Required Headers:</p>
+						<ul>
+							<li>Content-Type : application/json</li>
+						</ul>
+					</li>
+					<li>
+						<p>Arguments (in JSON):</p>
+						<ul>
+							<li>page_key : (the page key for the page you wish to add files to)</li>
+							<li>file_ids : (selective, a list of numerical file ids)</li>
+							<li>hashes : (selective, a list of hexadecimal SHA256 hashes)</li>
+						</ul>
+					</li>
+					<p>You need to use either file_ids or hashes. The files they refer to will be appended to the given page, just like a thumbnail drag and drop operation. The page key is the same as fetched in the <a href="#manage_pages_get_pages">/manage_pages/get_pages</a> call.</p>
+					<li>
+						<p>Example request body:</p>
+						<ul>
+							<li>
+<pre>{
+	"page_key" : "af98318b6eece15fef3cf0378385ce759bfe056916f6e12157cd928eb56c1f18"
+	"file_ids" : [ 123, 124, 125 ]
+}</pre>
+							</li>
+						</ul>
+					</li>
+					<li><p>Response description: 200 with no content. If the page key is not found, this will 404.</p></li>
+				</ul>
+			</div>
+			<div class="apiborder">
 				<h3 id="manage_pages_focus_page"><a href="#manage_pages_focus_page"><b>POST /manage_pages/focus_page</b></a></h3>
 				<p><i>'Show' a page in the main GUI, making it the current page in view. If it is already the current page, no change is made.</i></p>
 				<ul>
@@ -1088,18 +1152,136 @@
 						<p>Arguments (in percent-encoded JSON):</p>
 						<ul>
 							<li>tags : (a list of tags you wish to search for)</li>
-							<li>system_inbox : true or false (optional, defaulting to false)</li>
-							<li>system_archive : true or false (optional, defaulting to false)</li>
+							<li>file_service_name : (optional, selective, string, the file domain on which to search)</li>
+							<li>file_service_key : (optional, selective, hexadecimal, the file domain on which to search)</li>
+							<li>tag_service_name : (optional, selective, string, the tag domain on which to search)</li>
+							<li>tag_service_key : (optional, selective, hexadecimal, the tag domain on which to search)</li>
+							<li>file_sort_type : (optional, integer, the results sort method)</li>
+							<li>file_sort_asc : true or false (optional, the results sort order)</li>
+                                                        <li>return_hashes : true or false (optional, default false, returns hex hashes instead of file ids)</li>
+							<li><i>system_inbox : true or false (obsolete, use tags)</i></li>
+							<li><i>system_archive : true or false (obsolete, use tags)</i></li>
 						</ul>
 					</li>
 					<li>
-						<p>Example request for all files in the inbox with tags "blue eyes", "blonde hair", and "&#1082;&#1080;&#1085;&#1086;":</p>
+						<p>Example request for 16 files (system:limit=16) in the inbox with tags "blue eyes", "blonde hair", and "&#1082;&#1080;&#1085;&#1086;":</p>
 						<ul>
-							<li><p>/get_files/search_files?system_inbox=true&tags=%5B%22blue%20eyes%22%2C%20%22blonde%20hair%22%2C%20%22%5Cu043a%5Cu0438%5Cu043d%5Cu043e%22%5D</p></li>
+							<li><p>/get_files/search_files?tags=%5B%22blue%20eyes%22%2C%20%22blonde%20hair%22%2C%20%22%5Cu043a%5Cu0438%5Cu043d%5Cu043e%22%2C%20%22system%3Ainbox%22%2C%20%22system%3Alimit%3D16%22%5D</p></li>
 						</ul>
 					</li>
-					<p>If the access key's permissions only permit search for certain tags, at least one whitelisted/non-blacklisted tag must be in the "tags" list or this will 403. Tags can be prepended with a hyphen to make a negated tag (e.g. "-green eyes"), but these will not be checked against the permissions whitelist.</p>
-                                        <p>Wildcards and namespace searches are now supported, so if you search for 'character:sam*' or 'series:*', this will be handled correctly clientside.</p>
+                                        <p>If the access key's permissions only permit search for certain tags, at least one positive whitelisted/non-blacklisted tag must be in the "tags" list or this will 403. Tags can be prepended with a hyphen to make a negated tag (e.g. "-green eyes"), but these will not be checked against the permissions whitelist.</p>
+					<p>Wildcards and namespace searches are supported, so if you search for 'character:sam*' or 'series:*', this will be handled correctly clientside.</p>
+                                        <p>Many system predicates are also supported using a text parser! The parser was designed by a clever user for human input and allows for a certain amount of error (e.g. ~= instead of ≈, or "isn't" instead of "is not") or requires more information (e.g. the specific hashes for a hash lookup). Here's a big list of current formats supported:</p>
+					<ul>
+						<li>system:everything</li>
+						<li>system:inbox</li>
+						<li>system:archive</li>
+						<li>system:has duration</li>
+						<li>system:no duration</li>
+						<li>system:is the best quality file of its duplicate group</li>
+						<li>system:is not the best quality file of its duplicate group</li>
+						<li>system:has audio</li>
+						<li>system:no audio</li>
+						<li>system:has icc profile</li>
+						<li>system:no icc profile</li>
+						<li>system:has tags</li>
+						<li>system:no tags</li>
+						<li>system:untagged</li>
+						<li>system:number of tags &gt; 5</li>
+						<li>system:number of tags ~= 10</li>
+						<li>system:number of tags &gt; 0</li>
+						<li>system:number of words &lt; 2</li>
+						<li>system:height = 600</li>
+						<li>system:height &gt; 900</li>
+						<li>system:width &lt; 200</li>
+						<li>system:width &gt; 1000</li>
+						<li>system:filesize ~= 50 kilobytes</li>
+						<li>system:filesize &gt; 10megabytes</li>
+						<li>system:filesize &lt; 1 GB</li>
+						<li>system:filesize &gt; 0 B</li>
+						<li>system:similar to abcdef01 abcdef02 abcdef03, abcdef04 with distance 3</li>
+						<li>system:similar to abcdef distance 5</li>
+						<li>system:limit = 100</li>
+						<li>system:filetype = image/jpg, image/png, apng</li>
+						<li>system:hash = abcdef01 abcdef02 abcdef03 <i>(this does sha256)</i></li>
+						<li>system:hash = abcdef01 abcdef02 md5</li>
+						<li>system:modified date &lt; 7 years 45 days 7h</li>
+						<li>system:modified date &gt; 2011-06-04</li>
+						<li>system:date modified &gt; 7 years 2 months</li>
+						<li>system:date modified &lt; 0 years 1 month 1 day 1 hour</li>
+						<li>system:time imported &lt; 7 years 45 days 7h</li>
+						<li>system:time imported &gt; 2011-06-04</li>
+						<li>system:time imported &gt; 7 years 2 months</li>
+						<li>system:time imported &lt; 0 years 1 month 1 day 1 hour</li>
+						<li>system:time imported ~= 2011-1-3</li>
+						<li>system:time imported ~= 1996-05-2</li>
+						<li>system:duration &lt; 5 seconds</li>
+						<li>system:duration ~= 600 msecs</li>
+						<li>system:duration &gt; 3 milliseconds</li>
+						<li>system:file service is pending to my files</li>
+						<li>system:file service currently in my files</li>
+						<li>system:file service is not currently in my files</li>
+						<li>system:file service is not pending to my files</li>
+						<li>system:num file relationships &lt; 3 alternates</li>
+						<li>system:number of file relationships &gt; 3 false positives</li>
+						<li>system:ratio is wider than 16:9</li>
+						<li>system:ratio is 16:9</li>
+						<li>system:ratio taller than 1:1</li>
+						<li>system:num pixels &gt; 50 px</li>
+						<li>system:num pixels &lt; 1 megapixels </li>
+						<li>system:num pixels ~= 5 kilopixel</li>
+						<li>system:media views ~= 10</li>
+						<li>system:all views &gt; 0</li>
+						<li>system:preview views &lt; 10</li>
+						<li>system:media viewtime &lt; 1 days 1 hour 0 minutes</li>
+						<li>system:all viewtime &gt; 1 hours 100 seconds</li>
+						<li>system:preview viewtime ~= 1 day 30 hours 100 minutes 90s</li>
+						<li>system:has url matching regex index\.php</li>
+						<li>system:does not have a url matching regex index\.php</li>
+						<li>system:has url https://safebooru.donmai.us/posts/4695284</li>
+						<li>system:does not have url https://safebooru.donmai.us/posts/4695284</li>
+						<li>system:has domain safebooru.com</li>
+						<li>system:does not have domain safebooru.com</li>
+						<li>system:has a url with class safebooru file page</li>
+						<li>system:does not have a url with url class safebooru file page</li>
+						<li>system:tag as number page &lt; 5</li>
+					</ul>
+					<p>More system predicate types and input formats will be available in future. Please test out the system predicates you want to send. Reverse engineering system predicate data from text is obviously tricky. If a system predicate does not parse, you'll get 400.</p>
+                                        <p>Also, OR predicates are now supported! Just nest within the tag list, and it'll be treated like an OR. For instance:</p>
+                                        <ul>
+                                            <li>
+                                                <code>[ "skirt", [ "samus aran", "lara croft" ], "system:height > 1000" ]</code>
+                                                <p>Makes:</p>
+                                                <ul>
+                                                    <li>skirt</li>
+                                                    <li>samus aran OR lara croft</li>
+                                                    <li>system:height > 1000</li>
+                                                </ul>
+                                            </li>
+                                        </ul>
+                                        <p>The file and tag services are for search domain selection, just like clicking the buttons in the client. They are optional--default is 'my files' and 'all known tags', and you can use either key or name as in <a href="#get_services">GET /get_services</a>, whichever is easiest for your situation.</p>
+                                        <p>file_sort_asc is 'true' for ascending, and 'false' for descending. The default is descending.</p>
+                                        <p>file_sort_type is by default <i>import time</i>. It is an integer according to the following enum, and I have written the semantic (asc/desc) meaning for each type after:</p>
+                                        <ul>
+                                            <li>0 - file size (smallest first/largest first)</li>
+                                            <li>1 - duration (shortest first/longest first)</li>
+                                            <li>2 - import time (oldest first/newest first)</li>
+                                            <li>3 - filetype (N/A)</li>
+                                            <li>4 - random (N/A)</li>
+                                            <li>5 - width (slimmest first/widest first)</li>
+                                            <li>6 - height (shortest first/tallest first)</li>
+                                            <li>7 - ratio (tallest first/widest first)</li>
+                                            <li>8 - number of pixels (ascending/descending)</li>
+                                            <li>9 - number of tags (on the current tag domain) (ascending/descending)</li>
+                                            <li>10 - number of media views (ascending/descending)</li>
+                                            <li>11 - total media viewtime (ascending/descending)</li>
+                                            <li>12 - approximate bitrate (smallest first/largest first)</li>
+                                            <li>13 - has audio (audio first/silent first)</li>
+                                            <li>14 - modified time (oldest first/newest first)</li>
+                                            <li>15 - framerate (slowest first/fastest first)</li>
+                                            <li>16 - number of frames (smallest first/largest first)</li>
+                                            <li>18 - last viewed time (oldest firste/newest first)</li>
+                                        </ul>
 					<p>Response description: The full list of numerical file ids that match the search.</p>
 					<li>
 						<p>Example response:</p>
@@ -1110,10 +1292,21 @@
 }</pre>
 							</li>
 						</ul>
+						<p>Example response with return_hashes=true:</p>
+						<ul>
+							<li>
+<pre>{
+    "hashes": [
+        "1b04c4df7accd5a61c5d02b36658295686b0abfebdc863110e7d7249bba3f9ad",
+        "fe416723c731d679aa4d20e9fd36727f4a38cd0ac6d035431f0f452fad54563f",
+        "b53505929c502848375fbc4dab2f40ad4ae649d34ef72802319a348f81b52bad"
+    ]
+}</pre>
+							</li>
+						</ul>
 					</li>
 					<p>File ids are internal and specific to an individual client. For a client, a file with hash H always has the same file id N, but two clients will have different ideas about which N goes with which H. They are a bit faster than hashes to retrieve and search with <i>en masse</i>, which is why they are exposed here.</p>
-					<p>The search will be performed on the 'local files' file domain and 'all known tags' tag domain. At current, they will be sorted in import time order, newest to oldest (if you would like to paginate them before fetching metadata), but sort options will expand in future.</p>
-					<p>Note that most clients will have an invisible system:limit of 10,000 files on all queries. I expect to add more system predicates to help searching for untagged files, but it is tricky to fetch all files under any circumstance. Large queries may take several seconds to respond.</p>
+					<p>This search does <b>not</b> apply the implicit limit that most clients set to all searches (usually 10,000), so if you do system:everything on a client with millions of files, expect to get boshed. Even with a system:limit included, complicated queries with large result sets may take several seconds to respond. Just like the client itself.</p>
 				</ul>
 			</div>
 			<div class="apiborder">
@@ -1125,10 +1318,11 @@
 					<li>
 						<p>Arguments (in percent-encoded JSON):</p>
 						<ul>
-							<li>file_ids : (a list of numerical file ids)</li>
-							<li>hashes : (a list of hexadecimal SHA256 hashes)</li>
+							<li>file_ids : (selective, a list of numerical file ids)</li>
+							<li>hashes : (selective, a list of hexadecimal SHA256 hashes)</li>
 							<li>only_return_identifiers : true or false (optional, defaulting to false)</li>
 							<li>detailed_url_information : true or false (optional, defaulting to false)</li>
+                                                        <li>hide_service_names_tags : true or false (optional, defaulting to false)</li>
 						</ul>
 					</li>
 					<p>You need one of file_ids or hashes. If your access key is restricted by tag, you cannot search by hashes, and <b>the file_ids you search for must have been in the most recent search result</b>.</p>
@@ -1167,6 +1361,11 @@
 			"width" : 640,
 			"height" : 480,
 			"duration" : null,
+                        "time_modified" : null,
+                        "file_services" : {
+                            "current" : {},
+                            "deleted" : {}
+                        },
 			"has_audio" : false,
 			"num_frames" : null,
 			"num_words" : null,
@@ -1175,7 +1374,9 @@
 			"is_trashed" : false,
 			"known_urls" : [],
 			"service_names_to_statuses_to_tags" : {}
+			"service_keys_to_statuses_to_tags" : {}
 			"service_names_to_statuses_to_display_tags" : {}
+			"service_keys_to_statuses_to_display_tags" : {}
 		},
 		{
 			"file_id" : 4567,
@@ -1186,6 +1387,20 @@
 			"width" : 1920,
 			"height" : 1080,
 			"duration" : 4040,
+                        "time_modified" : 1624055647,
+                        "file_services" : {
+                            "current" : {
+                                "616c6c206c6f63616c2066696c6573" : {
+                                    "time_imported" : 1641044491
+                                }
+                            },
+                            "deleted" : {
+                                "6c6f63616c2066696c6573" : {
+                                    "time_deleted" : 1641204274,
+                                    "time_imported" : 1641044491
+                                }
+                            }
+                        },
 			"has_audio" : true,
 			"num_frames" : 102,
 			"num_words" : null,
@@ -1207,12 +1422,32 @@
 					"1" : [ "bodysuit" ]
 				}
 			},
+			"service_keys_to_statuses_to_tags" : {
+				"6c6f63616c2074616773" : {
+					"0" : [ "favourites" ]
+					"2" : [ "process this later" ]
+				},
+				"37e3849bda234f53b0e9792a036d14d4f3a9a136d1cb939705dbcd5287941db4" : {
+					"0" : [ "blonde_hair", "blue_eyes", "looking_at_viewer" ]
+					"1" : [ "bodysuit" ]
+				}
+			},
 			"service_names_to_statuses_to_display_tags" : {
 				"my tags" : {
 					"0" : [ "favourites" ]
 					"2" : [ "process this later", "processing" ]
 				},
 				"my tag repository" : {
+					"0" : [ "blonde hair", "blue eyes", "looking at viewer" ]
+					"1" : [ "bodysuit", "clothing" ]
+				}
+			},
+			"service_keys_to_statuses_to_display_tags" : {
+				"6c6f63616c2074616773" : {
+					"0" : [ "favourites" ]
+					"2" : [ "process this later", "processing" ]
+				},
+				"37e3849bda234f53b0e9792a036d14d4f3a9a136d1cb939705dbcd5287941db4" : {
 					"0" : [ "blonde hair", "blue eyes", "looking at viewer" ]
 					"1" : [ "bodysuit", "clothing" ]
 				}
@@ -1241,17 +1476,20 @@
 						</ul>
 					</li>
 					<p>Size is in bytes. Duration is in milliseconds, and may be an int or a float.</p>
-					<p>The service_names_to_statuses_to_tags structures are similar to the /add_tags/add_tags scheme, excepting that the status numbers are:</p>
+                                        <p>file_services stores which file services the file is <i>current</i>ly in and <i>deleted</i> from. The entries are by the service key, same as for tags later on. In rare cases, the timestamps may be <i>null</i>, if they are unknown (e.g. a time_deleted for the file deleted before this information was tracked). The time_modified can also be null. Time modified is just the filesystem modified time for now, but it will evolve into more complicated storage in future with multiple locations (website post times) that'll be aggregated to a sensible value in UI.</p>
+					<p>The service_names_to_statuses_to_tags and service_keys_to_statuses_to_tags structures are similar to the /add_tags/add_tags scheme, excepting that the status numbers are:</p>
 					<ul>
 						<li>0 - current</li>
 						<li>1 - pending</li>
 						<li>2 - deleted</li>
 						<li>3 - petitioned</li>
 					</ul>
+                                        <p>The tag structure is duplicated for both 'name' and 'key'. The use of 'name' is an increasingly legacy issue--a hack when the Client API was young--and 'service_names_to...' lookups are likely to be deleted in future in favour of service_key. I recommend you move to service key when you can. To learn more about service names and keys on a client, use the <a href="#get_services">/get_services</a> call (and cache the response--it doesn't change much!).</p>
 					<p>Note that since JSON Object keys must be strings, these status numbers are strings, not ints.</p>
-					<p>While service_names_to_statuses_to_tags represents the actual tags stored on the database for a file, the service_names_to_statuses_to_display_tags structure reflects how tags appear in the UI, after siblings are collapsed and parents are added. If you want to edit a file's tags, use service_names_to_statuses_to_tags. If you want to render to the user, use service_names_to_statuses_to_displayed_tags.</p>
+                                        <p>While service_XXX_to_statuses_to_tags represent the actual tags stored on the database for a file, the service_XXX_to_statuses_to_<i>display</i>_tags structures reflect how tags appear in the UI, after siblings are collapsed and parents are added. If you want to edit a file's tags, start with service_keys_to_statuses_to_tags. If you want to render to the user, use service_keys_to_statuses_to_displayed_tags.</p>
+					<p>If you add hide_service_names_tags=true, the 'service_names_to_statuses_to_tags' and 'service_names_to_statuses_to_display_tags' Objects will not be included. Use this to save data/CPU on large queries.</p>
 					<p>If you add detailed_url_information=true, a new entry, 'detailed_known_urls', will be added for each file, with a list of the same structure as /add_urls/get_url_info. This may be an expensive request if you are querying thousands of files at once.</p>
-					<p>For example:</p>
+                                        <p>For example:</p>
 						<ul>
 							<li>
 <pre>"detailed_known_urls" : [
@@ -1346,6 +1584,38 @@
 						<p>Arguments: None</p>
 					</li>
 					<p>This is the obvious complement to the lock. The client will resume processing its job queue and will catch up. If the UI was frozen, it should free up in a few seconds, just like after a big VACUUM.</p>
+				</ul>
+			</div>
+                        <div class="apiborder">
+				<h3 id="manage_database_mr_bones"><a href="#manage_database_mr_bones"><b>GET /manage_database/mr_bones</b></a></h3>
+				<p><i>Get the data from <i>help-&gt;how boned am I?</i>. This is a simple Object of numbers just for hacky advanced purposes if you want to build up some stats in the background. The numbers are the same as the dialog shows, so double check that to confirm what means what.</i></p>
+				<ul>
+					<li><p>Restricted access: YES. Manage Database permission needed.</p></li>
+					<li>
+						<p>Arguments: None</p>
+					</li>
+					<li>
+						<p>Example response:</p>
+						<ul>
+							<li>
+<pre>{
+    "boned_stats" : {
+        "num_inbox" : 8356,
+        "num_archive" : 229,
+        "num_deleted" : 7010,
+        "size_inbox" : 7052596762,
+        "size_archive" : 262911007,
+        "size_deleted" : 13742290193,
+        "earliest_import_time" : 1451408539,
+        "total_viewtime" : [ 3280, 41621, 2932, 83021 ],
+        "total_alternate_files" : 265,
+        "total_duplicate_files" : 125,
+        "total_potential_pairs" : 3252
+    }
+}</pre>
+							</li>
+						</ul>
+					</li>
 				</ul>
 			</div>
 		</div>

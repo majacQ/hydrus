@@ -12,7 +12,7 @@ from hydrus.core import HydrusSerialisable
 from hydrus.core import HydrusTags
 
 from hydrus.client import ClientConstants as CC
-from hydrus.client import ClientServices
+from hydrus.client import ClientLocation
 from hydrus.client.metadata import ClientTags
 
 class TagAutocompleteOptions( HydrusSerialisable.SerialisableBase ):
@@ -185,7 +185,7 @@ class TagAutocompleteOptions( HydrusSerialisable.SerialisableBase ):
         return self._write_autocomplete_file_domain
         
     
-    def GetWriteAutocompleteServiceKeys( self, file_service_key: bytes ):
+    def GetWriteAutocompleteDomain( self, location_context: ClientLocation.LocationContext ):
         
         tag_service_key = self._service_key
         
@@ -193,18 +193,18 @@ class TagAutocompleteOptions( HydrusSerialisable.SerialisableBase ):
             
             if self._override_write_autocomplete_file_domain:
                 
-                file_service_key = self._write_autocomplete_file_domain
+                location_context = ClientLocation.LocationContext.STATICCreateSimple( self._write_autocomplete_file_domain )
                 
             
             tag_service_key = self._write_autocomplete_tag_domain
             
         
-        if file_service_key == CC.COMBINED_FILE_SERVICE_KEY and tag_service_key == CC.COMBINED_TAG_SERVICE_KEY: # ruh roh
+        if location_context.IsAllKnownFiles() and tag_service_key == CC.COMBINED_TAG_SERVICE_KEY: # ruh roh
             
-            file_service_key = CC.COMBINED_LOCAL_FILE_SERVICE_KEY
+            location_context = ClientLocation.LocationContext.STATICCreateSimple( CC.COMBINED_LOCAL_FILE_SERVICE_KEY )
             
         
-        return ( file_service_key, tag_service_key )
+        return ( location_context, tag_service_key )
         
     
     def GetWriteAutocompleteTagDomain( self ):
@@ -405,7 +405,10 @@ class TagDisplayMaintenanceManager( object ):
                 
                 status = self._controller.Read( 'tag_display_maintenance_status', service_key )
                 
-                self._service_keys_to_needs_work[ service_key ] = status[ 'num_siblings_to_sync' ] + status[ 'num_parents_to_sync' ] > 0
+                work_to_do = status[ 'num_siblings_to_sync' ] + status[ 'num_parents_to_sync' ] > 0
+                sync_halted = len( status[ 'waiting_on_tag_repos' ] ) > 0
+                
+                self._service_keys_to_needs_work[ service_key ] = work_to_do and not sync_halted
                 
             
             if self._service_keys_to_needs_work[ service_key ]:
@@ -457,7 +460,9 @@ class TagDisplayMaintenanceManager( object ):
             
             self._wake_event.wait( INIT_WAIT )
             
-            while not ( HG.view_shutdown or self._shutdown ):
+            while not ( HG.started_shutdown or self._shutdown ):
+                
+                self._controller.WaitUntilViewFree()
                 
                 if self._WorkPermitted() and self._WorkToDo():
                     

@@ -13,6 +13,7 @@ from hydrus.core import HydrusThreading
 
 from hydrus.client import ClientConstants as CC
 from hydrus.client import ClientFiles
+from hydrus.client import ClientLocation
 from hydrus.client import ClientPaths
 from hydrus.client import ClientSearch
 from hydrus.client.media import ClientMediaManagers
@@ -21,7 +22,7 @@ from hydrus.client.metadata import ClientTagSorting
 
 MAX_PATH_LENGTH = 240 # bit of padding from 255 for .txt neigbouring and other surprises
 
-def GenerateExportFilename( destination_directory, media, terms, append_number = None ):
+def GenerateExportFilename( destination_directory, media, terms, do_not_use_filenames = None ):
     
     def clean_tag_text( t ):
         
@@ -144,12 +145,25 @@ def GenerateExportFilename( destination_directory, media, terms, append_number =
         filename = filename[ : - excess_chars ]
         
     
-    if append_number is not None:
+    if do_not_use_filenames is not None:
         
-        filename += ' ({})'.format( append_number )
+        i = 1
         
-    
-    filename += ext
+        possible_filename = '{}{}'.format( filename, ext )
+        
+        while possible_filename in do_not_use_filenames:
+            
+            possible_filename = '{} ({}){}'.format( filename, i, ext )
+            
+            i += 1
+            
+        
+        filename = possible_filename
+        
+    else:
+        
+        filename += ext
+        
     
     return filename
     
@@ -277,11 +291,9 @@ class ExportFolder( HydrusSerialisable.SerialisableBaseNamed ):
         
         if file_search_context is None:
             
-            default_local_file_service_key = HG.client_controller.services_manager.GetDefaultLocalFileServiceKey()
+            default_location_context = HG.client_controller.services_manager.GetDefaultLocationContext()
             
-            location_search_context = ClientSearch.LocationSearchContext( current_service_keys = [ default_local_file_service_key ] )
-            
-            file_search_context = ClientSearch.FileSearchContext( location_search_context = location_search_context )
+            file_search_context = ClientSearch.FileSearchContext( location_context = default_location_context )
             
         
         if phrase is None:
@@ -457,7 +469,7 @@ class ExportFolder( HydrusSerialisable.SerialisableBaseNamed ):
                     
                     num_copied += 1
                     
-                    HydrusPaths.MakeFileWriteable( dest_path )
+                    HydrusPaths.TryToGiveFileNicePermissionBits( dest_path )
                     
                 
             

@@ -32,6 +32,7 @@ from hydrus.client import ClientThreading
 from hydrus.client.gui import QtPorting as QP
 from hydrus.client.gui import ClientGUISplash
 from hydrus.client.gui.lists import ClientGUIListManager
+from hydrus.client.importing import ClientImportFiles
 from hydrus.client.metadata import ClientTags
 from hydrus.client.metadata import ClientTagsHandling
 from hydrus.client.networking import ClientNetworking
@@ -172,6 +173,10 @@ class Controller( object ):
         self.app = win
         self.win = win
         self.only_run = only_run
+        self.run_finished = False
+        self.was_successful = False
+        
+        self._test_db = None
         
         self.db_dir = tempfile.mkdtemp()
         
@@ -212,15 +217,15 @@ class Controller( object ):
         
         HydrusData.ShowText = show_text
         
-        self._reads = {}
+        self._name_read_responses = {}
         
-        self._reads[ 'local_booru_share_keys' ] = []
-        self._reads[ 'messaging_sessions' ] = []
-        self._reads[ 'options' ] = ClientDefaults.GetClientDefaultOptions()
-        self._reads[ 'file_system_predicates' ] = []
-        self._reads[ 'media_results' ] = []
+        self._name_read_responses[ 'local_booru_share_keys' ] = []
+        self._name_read_responses[ 'messaging_sessions' ] = []
+        self._name_read_responses[ 'options' ] = ClientDefaults.GetClientDefaultOptions()
+        self._name_read_responses[ 'file_system_predicates' ] = []
+        self._name_read_responses[ 'media_results' ] = []
         
-        self._param_reads = {}
+        self._param_read_responses = {}
         
         self.example_tag_repo_service_key = HydrusData.GenerateKey()
         
@@ -238,7 +243,7 @@ class Controller( object ):
         services.append( ClientServices.GenerateService( LOCAL_RATING_LIKE_SERVICE_KEY, HC.LOCAL_RATING_LIKE, 'example local rating like service' ) )
         services.append( ClientServices.GenerateService( LOCAL_RATING_NUMERICAL_SERVICE_KEY, HC.LOCAL_RATING_NUMERICAL, 'example local rating numerical service' ) )
         
-        self._reads[ 'services' ] = services
+        self._name_read_responses[ 'services' ] = services
         
         client_files_locations = {}
         
@@ -250,14 +255,15 @@ class Controller( object ):
                 
             
         
-        self._reads[ 'client_files_locations' ] = client_files_locations
+        self._name_read_responses[ 'client_files_locations' ] = client_files_locations
         
-        self._reads[ 'sessions' ] = []
-        self._reads[ 'tag_parents' ] = {}
-        self._reads[ 'tag_siblings_all_ideals' ] = {}
-        self._reads[ 'inbox_hashes' ] = set()
+        self._name_read_responses[ 'sessions' ] = []
+        self._name_read_responses[ 'tag_parents' ] = {}
+        self._name_read_responses[ 'tag_siblings_all_ideals' ] = {}
+        self._name_read_responses[ 'inbox_hashes' ] = set()
         
-        self._writes = collections.defaultdict( list )
+        self._read_call_args = collections.defaultdict( list )
+        self._write_call_args = collections.defaultdict( list )
         
         self._managers = {}
         
@@ -431,9 +437,9 @@ class Controller( object ):
     
     CallToThreadLongRunning = CallToThread
     
-    def CallAfterQtSafe( self, window, func, *args, **kwargs ):
+    def CallAfterQtSafe( self, window, label, func, *args, **kwargs ):
         
-        self.CallLaterQtSafe( window, 0, func, *args, **kwargs )
+        self.CallLaterQtSafe( window, 0, label, func, *args, **kwargs )
         
     
     def CallLater( self, initial_delay, func, *args, **kwargs ):
@@ -447,18 +453,20 @@ class Controller( object ):
         return job
         
     
-    def CallLaterQtSafe( self, window, initial_delay, func, *args, **kwargs ):
+    def CallLaterQtSafe( self, window, initial_delay, label, func, *args, **kwargs ):
         
         call = HydrusData.Call( func, *args, **kwargs )
         
-        job = ClientThreading.QtAwareJob(self, self._job_scheduler, window, initial_delay, call)
+        call.SetLabel( label )
+        
+        job = ClientThreading.QtAwareJob( self, self._job_scheduler, window, initial_delay, call )
         
         self._job_scheduler.AddJob( job )
         
         return job
         
     
-    def CallRepeating( self, initial_delay, period, func, *args, **kwargs ):
+    def CallRepeating( self, initial_delay, period, label, func, *args, **kwargs ):
         
         call = HydrusData.Call( func, *args, **kwargs )
         
@@ -469,7 +477,7 @@ class Controller( object ):
         return job
         
     
-    def CallRepeatingQtSafe( self, window, initial_delay, period, func, *args, **kwargs ):
+    def CallRepeatingQtSafe( self, window, initial_delay, period, label, func, *args, **kwargs ):
         
         call = HydrusData.Call( func, *args, **kwargs )
         
@@ -480,11 +488,24 @@ class Controller( object ):
         return job
         
     
+    def ClearReads( self, name ):
+        
+        if name in self._read_call_args:
+            
+            del self._read_call_args[ name ]
+            
+        
+    
+    def ClearTestDB( self ):
+        
+        self._test_db = None
+        
+    
     def ClearWrites( self, name ):
         
-        if name in self._writes:
+        if name in self._write_call_args:
             
-            del self._writes[ name ]
+            del self._write_call_args[ name ]
             
         
     
@@ -572,11 +593,20 @@ class Controller( object ):
         return {}
         
     
+    def GetRead( self, name ):
+        
+        read = self._read_call_args[ name ]
+        
+        del self._read_call_args[ name ]
+        
+        return read
+        
+    
     def GetWrite( self, name ):
         
-        write = self._writes[ name ]
+        write = self._write_call_args[ name ]
         
-        del self._writes[ name ]
+        del self._write_call_args[ name ]
         
         return write
         
@@ -644,11 +674,18 @@ class Controller( object ):
     
     def Read( self, name, *args, **kwargs ):
         
+        self._read_call_args[ name ].append( ( args, kwargs ) )
+        
+        if self._test_db is not None:
+            
+            return self._test_db.Read( name, *args, **kwargs )
+            
+        
         try:
             
-            if ( name, args ) in self._param_reads:
+            if ( name, args ) in self._param_read_responses:
                 
-                return self._param_reads[ ( name, args ) ]
+                return self._param_read_responses[ ( name, args ) ]
                 
             
         except:
@@ -656,7 +693,14 @@ class Controller( object ):
             pass
             
         
-        return self._reads[ name ]
+        result = self._name_read_responses[ name ]
+        
+        if isinstance( result, Exception ):
+            
+            raise HydrusExceptions.DBException( result, str( result ), 'test trace' )
+            
+        
+        return result
         
     
     def RegisterUIUpdateWindow( self, window ):
@@ -788,6 +832,10 @@ class Controller( object ):
             TestClientDBDuplicates
         ]
         
+        module_lookup[ 'db_tags' ] = [
+            TestClientDBTags
+        ]
+        
         module_lookup[ 'nat' ] = [
             TestHydrusNATPunch
         ]
@@ -834,7 +882,10 @@ class Controller( object ):
             
             try:
                 
-                runner.run( suite )
+                result = runner.run( suite )
+                
+                self.run_finished = True
+                self.was_successful = result.wasSuccessful()
                 
             finally:
                 
@@ -851,17 +902,22 @@ class Controller( object ):
     
     def SetParamRead( self, name, args, value ):
         
-        self._param_reads[ ( name, args ) ] = value
+        self._param_read_responses[ ( name, args ) ] = value
         
     
     def SetRead( self, name, value ):
         
-        self._reads[ name ] = value
+        self._name_read_responses[ name ] = value
         
     
     def SetStatusBarDirty( self ):
         
         pass
+        
+    
+    def SetTestDB( self, db ):
+        
+        self._test_db = db
         
     
     def SetWebCookies( self, name, value ):
@@ -898,12 +954,17 @@ class Controller( object ):
     
     def Write( self, name, *args, **kwargs ):
         
-        self._writes[ name ].append( ( args, kwargs ) )
+        if self._test_db is not None:
+            
+            return self._test_db.Write( name, *args, **kwargs )
+            
+        
+        self._write_call_args[ name ].append( ( args, kwargs ) )
         
     
     def WriteSynchronous( self, name, *args, **kwargs ):
         
-        self._writes[ name ].append( ( args, kwargs ) )
+        self._write_call_args[ name ].append( ( args, kwargs ) )
         
         if name == 'import_file':
             
@@ -915,7 +976,14 @@ class Controller( object ):
                 
             else:
                 
-                return ( CC.STATUS_SUCCESSFUL_AND_NEW, 'test note' )
+                h = file_import_job.GetHash()
+                
+                if h is None:
+                    
+                    h = os.urandom( 32 )
+                    
+                
+                return ClientImportFiles.FileImportStatus( CC.STATUS_SUCCESSFUL_AND_NEW, h, note = 'test note' )
                 
             
         

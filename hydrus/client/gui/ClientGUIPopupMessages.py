@@ -5,11 +5,13 @@ import traceback
 from qtpy import QtCore as QC
 from qtpy import QtWidgets as QW
 
+from hydrus.core import HydrusConstants as HC
 from hydrus.core import HydrusData
 from hydrus.core import HydrusGlobals as HG
 
 from hydrus.client import ClientConstants as CC
 from hydrus.client import ClientData
+from hydrus.client import ClientLocation
 from hydrus.client import ClientThreading
 from hydrus.client.gui import ClientGUIDialogsQuick
 from hydrus.client.gui import ClientGUIFunctions
@@ -248,7 +250,12 @@ class PopupMessage( PopupWindow ):
     
     def CopyTB( self ):
         
-        HG.client_controller.pub( 'clipboard', 'text', self._job_key.ToString() )
+        info = 'v{}, {}, {}'.format( HC.SOFTWARE_VERSION, sys.platform.lower(), 'frozen' if HC.RUNNING_FROM_FROZEN_BUILD else 'source' )
+        trace = self._job_key.ToString()
+        
+        full_text = info + os.linesep + trace
+        
+        HG.client_controller.pub( 'clipboard', 'text', full_text )
         
     
     def CopyToClipboard( self ):
@@ -285,7 +292,9 @@ class PopupMessage( PopupWindow ):
             
             ( popup_files, popup_files_name ) = result
             
-            HG.client_controller.pub( 'new_page_query', CC.LOCAL_FILE_SERVICE_KEY, initial_hashes = popup_files, page_name = popup_files_name )
+            location_context = ClientLocation.GetLocationContextForAllLocalMedia()
+            
+            HG.client_controller.pub( 'new_page_query', location_context, initial_hashes = popup_files, page_name = popup_files_name )
             
         
     
@@ -627,13 +636,13 @@ class PopupMessageManager( QW.QWidget ):
         
         job_key.SetVariable( 'popup_text_1', 'initialising popup message manager\u2026' )
         
-        self._update_job = HG.client_controller.CallRepeatingQtSafe( self, 0.25, 0.5, self.REPEATINGUpdate )
+        self._update_job = HG.client_controller.CallRepeatingQtSafe( self, 0.25, 0.5, 'repeating popup message update', self.REPEATINGUpdate )
         
         self._summary_bar.expandCollapse.connect( self.ExpandCollapse )
         
-        HG.client_controller.CallLaterQtSafe(self, 0.5, self.AddMessage, job_key)
+        HG.client_controller.CallLaterQtSafe( self, 0.5, 'initialise message', self.AddMessage, job_key )
         
-        HG.client_controller.CallLaterQtSafe(self, 1.0, job_key.Delete)
+        HG.client_controller.CallLaterQtSafe( self, 1.0, 'delete initial message', job_key.Delete )
         
     
     def _CheckPending( self ):
@@ -687,7 +696,10 @@ class PopupMessageManager( QW.QWidget ):
     
     def _DoDebugHide( self ):
         
-        if not QP.isValid( self ): return
+        if not QP.isValid( self ):
+            
+            return
+            
         
         parent = self.parentWidget()
         
@@ -762,11 +774,9 @@ class PopupMessageManager( QW.QWidget ):
             
             gui_frame = self.parentWidget()
             
-            possibly_on_hidden_virtual_desktop = not ClientGUIFunctions.MouseIsOnMyDisplay( gui_frame )
-            
             gui_is_hidden = not gui_frame.isVisible()
             
-            going_to_bug_out_at_hide_or_show = possibly_on_hidden_virtual_desktop or gui_is_hidden
+            going_to_bug_out_at_hide_or_show = gui_is_hidden
             
             current_focus_tlw = QW.QApplication.activeWindow()
             
@@ -861,13 +871,37 @@ class PopupMessageManager( QW.QWidget ):
         
         main_gui = self.parentWidget()
         
-        # test both because when user uses a shortcut to send gui to a diff monitor, we can't chase it
-        # this may need a better test for virtual display dismissal
-        not_on_hidden_or_virtual_display = ClientGUIFunctions.MouseIsOnMyDisplay( main_gui ) or ClientGUIFunctions.MouseIsOnMyDisplay( self )
+        gui_is_hidden = not main_gui.isVisible()
         
-        main_gui_up = not main_gui.isMinimized()
+        if gui_is_hidden:
+            
+            return False
+            
         
-        return not_on_hidden_or_virtual_display and main_gui_up
+        if HG.client_controller.new_options.GetBoolean( 'freeze_message_manager_when_mouse_on_other_monitor' ):
+            
+            # test both because when user uses a shortcut to send gui to a diff monitor, we can't chase it
+            # this may need a better test for virtual display dismissal
+            # this is also a proxy for hidden/virtual displays, which is really what it is going on about
+            on_my_monitor = ClientGUIFunctions.MouseIsOnMyDisplay( main_gui ) or ClientGUIFunctions.MouseIsOnMyDisplay( self )
+            
+            if not on_my_monitor:
+                
+                return False
+                
+            
+        
+        if HG.client_controller.new_options.GetBoolean( 'freeze_message_manager_when_main_gui_minimised' ):
+            
+            main_gui_up = not main_gui.isMinimized()
+            
+            if not main_gui_up:
+                
+                return False
+                
+            
+        
+        return True
         
     
     def _TryToMergeMessage( self, job_key ):
@@ -918,7 +952,7 @@ class PopupMessageManager( QW.QWidget ):
     
     def _Update( self ):
         
-        if HG.view_shutdown:
+        if HG.started_shutdown:
             
             self._update_job.Cancel()
             
@@ -1113,6 +1147,7 @@ class PopupMessageManager( QW.QWidget ):
             raise
             
         
+    
 # This was originally a reviewpanel subclass which is a scroll area subclass, but having it in a scroll area didn't work out with dynamically updating size as the widget contents change.
 class PopupMessageDialogPanel( QW.QWidget ):
     
@@ -1140,7 +1175,7 @@ class PopupMessageDialogPanel( QW.QWidget ):
         
         self._message_pubbed = False
         
-        self._update_job = HG.client_controller.CallRepeatingQtSafe( self, 0.25, 0.5, self.REPEATINGUpdate )
+        self._update_job = HG.client_controller.CallRepeatingQtSafe( self, 0.25, 0.5, 'repeating popup dialog update', self.REPEATINGUpdate )
         
     
     def CleanBeforeDestroy( self ):

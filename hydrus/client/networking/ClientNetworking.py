@@ -1,11 +1,17 @@
 import collections
 import threading
 import time
-import traceback
+import typing
 
 from hydrus.core import HydrusData
 from hydrus.core import HydrusExceptions
 from hydrus.core import HydrusGlobals as HG
+
+from hydrus.client.networking import ClientNetworkingBandwidth
+from hydrus.client.networking import ClientNetworkingSessions
+from hydrus.client.networking import ClientNetworkingDomain
+from hydrus.client.networking import ClientNetworkingJobs
+from hydrus.client.networking import ClientNetworkingLogin
 
 JOB_STATUS_AWAITING_VALIDITY = 0
 JOB_STATUS_AWAITING_BANDWIDTH = 1
@@ -18,12 +24,19 @@ job_status_str_lookup = {}
 job_status_str_lookup[ JOB_STATUS_AWAITING_VALIDITY ] = 'waiting for validation'
 job_status_str_lookup[ JOB_STATUS_AWAITING_BANDWIDTH ] = 'waiting for bandwidth'
 job_status_str_lookup[ JOB_STATUS_AWAITING_LOGIN ] = 'waiting for login'
-job_status_str_lookup[ JOB_STATUS_AWAITING_SLOT ] = 'waiting for slot'
+job_status_str_lookup[ JOB_STATUS_AWAITING_SLOT ] = 'waiting for free work slot'
 job_status_str_lookup[ JOB_STATUS_RUNNING ] = 'running'
 
 class NetworkEngine( object ):
     
-    def __init__( self, controller, bandwidth_manager, session_manager, domain_manager, login_manager ):
+    def __init__(
+        self,
+        controller,
+        bandwidth_manager: ClientNetworkingBandwidth.NetworkBandwidthManager,
+        session_manager: ClientNetworkingSessions.NetworkSessionManager,
+        domain_manager: ClientNetworkingDomain.NetworkDomainManager,
+        login_manager: ClientNetworkingLogin.NetworkLoginManager
+        ):
         
         self.controller = controller
         
@@ -32,9 +45,6 @@ class NetworkEngine( object ):
         self.domain_manager = domain_manager
         self.login_manager = login_manager
         
-        self.bandwidth_manager.engine = self
-        self.session_manager.engine = self
-        self.domain_manager.engine = self
         self.login_manager.engine = self
         
         self._lock = threading.Lock()
@@ -64,7 +74,7 @@ class NetworkEngine( object ):
         self.controller.sub( self, 'RefreshOptions', 'notify_new_options' )
         
     
-    def AddJob( self, job ):
+    def AddJob( self, job: ClientNetworkingJobs.NetworkJob ):
         
         if HG.network_report_mode:
             
@@ -81,7 +91,7 @@ class NetworkEngine( object ):
         self._new_work_to_do.set()
         
     
-    def ForceLogins( self, domains_to_login ):
+    def ForceLogins( self, domains_to_login: typing.Collection[ str ] ):
         
         with self._lock:
             
@@ -107,7 +117,7 @@ class NetworkEngine( object ):
             
         
     
-    def IsBusy( self ):
+    def IsBusy( self ) -> bool:
         
         with self._lock:
             
@@ -115,7 +125,7 @@ class NetworkEngine( object ):
             
         
     
-    def IsRunning( self ):
+    def IsRunning( self ) -> bool:
         
         with self._lock:
             
@@ -123,7 +133,7 @@ class NetworkEngine( object ):
             
         
     
-    def IsShutdown( self ):
+    def IsShutdown( self ) -> bool:
         
         with self._lock:
             
@@ -133,7 +143,7 @@ class NetworkEngine( object ):
     
     def MainLoop( self ):
         
-        def ProcessValidationJob( job ):
+        def ProcessValidationJob( job: ClientNetworkingJobs.NetworkJob ):
             
             if job.IsDone():
                 
@@ -194,7 +204,7 @@ class NetworkEngine( object ):
                 
             
         
-        def ProcessBandwidthJob( job ):
+        def ProcessBandwidthJob( job: ClientNetworkingJobs.NetworkJob ):
             
             if job.IsDone():
                 
@@ -248,7 +258,7 @@ class NetworkEngine( object ):
                 
             
         
-        def ProcessLoginJob( job ):
+        def ProcessLoginJob( job: ClientNetworkingJobs.NetworkJob ):
             
             if job.IsDone():
                 
@@ -340,7 +350,7 @@ class NetworkEngine( object ):
                 
             
         
-        def ProcessReadyJob( job ):
+        def ProcessReadyJob( job: ClientNetworkingJobs.NetworkJob ):
             
             if job.IsDone():
                 
@@ -370,7 +380,7 @@ class NetworkEngine( object ):
                     
                 elif self._active_domains_counter[ job.GetSecondLevelDomain() ] >= self.MAX_JOBS_PER_DOMAIN:
                     
-                    job.SetStatus( 'waiting for a slot on this domain' )
+                    job.SetStatus( 'waiting for other jobs on this domain to finish' )
                     
                     job.Sleep( 2 )
                     
@@ -402,13 +412,13 @@ class NetworkEngine( object ):
                 
             else:
                 
-                job.SetStatus( 'waiting for a slot\u2026' )
+                job.SetStatus( 'waiting for other jobs to finish\u2026' )
                 
                 return True
                 
             
         
-        def ProcessRunningJob( job ):
+        def ProcessRunningJob( job: ClientNetworkingJobs.NetworkJob ):
             
             if job.IsDone():
                 
@@ -479,6 +489,11 @@ class NetworkEngine( object ):
         self._pause_all_new_network_traffic = not self._pause_all_new_network_traffic
         
         self.controller.new_options.SetBoolean( 'pause_all_new_network_traffic', self._pause_all_new_network_traffic )
+        
+        if not self._pause_all_new_network_traffic:
+            
+            self.controller.pub( 'notify_network_traffic_unpaused' )
+            
         
     
     def RefreshOptions( self ):
